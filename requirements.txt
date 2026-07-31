@@ -1,0 +1,5 @@
+Pillow>=11.0,<13
+psutil>=6.0,<8
+pystray>=0.19.5,<1
+PyYAML>=6.0,<7
+pyinstaller>=6.10,<7
