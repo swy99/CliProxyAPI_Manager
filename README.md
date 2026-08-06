@@ -12,6 +12,8 @@ CLIProxyAPI 릴리스를 확인합니다.
 - 시작 시 및 6시간 간격으로 공식 CLIProxyAPI 릴리스 확인
 - 릴리스 자산의 SHA-256 검증, 업데이트 실패 시 자동 롤백
 - OAuth 만료 감지와 공급자별 재로그인 버튼
+- Claude Code 전역 서브에이전트 및 Haiku/백그라운드 모델 설정
+- CLIProxyAPI 모델 목록 조회와 사용자 정의 모델 ID 직접 입력
 - Windows 로그인 시 자동 실행
 - 창을 닫아도 계속 동작하는 시스템 트레이 인터페이스
 
@@ -37,6 +39,29 @@ CLIProxyAPI 릴리스를 확인합니다.
 
 관리자 창을 닫으면 트레이로 숨겨집니다. 완전히 끝내려면 트레이 메뉴에서
 **관리자 종료 (서버 유지)**를 선택합니다.
+
+## Claude Code 전역 모델 설정
+
+관리자 창의 **Claude Code 전역 모델 설정**에서 다음 값을 관리할 수 있습니다.
+
+- **전체 서브에이전트**: `CLAUDE_CODE_SUBAGENT_MODEL`
+- **Haiku / 백그라운드**: `ANTHROPIC_DEFAULT_HAIKU_MODEL`
+
+설정은 사용자 전역 파일인 `%USERPROFILE%\.claude\settings.json`에 저장됩니다.
+`inherit` 또는 `default`를 선택하면 해당 환경 변수 키를 파일에서 제거해 Claude
+Code의 기본 모델 해석을 사용합니다. CLIProxyAPI의 `/v1/models` 응답에 표시되지
+않는 모델이나 별칭도 콤보박스에 직접 입력할 수 있습니다.
+
+관리자는 저장 직전에 현재 설정 파일을 다시 읽고 위 두 키만 병합합니다. 저장 중
+다른 프로그램의 변경을 감지하면 최신 내용을 다시 읽어 병합을 재시도합니다. 다른
+환경 변수와 `permissions`, `hooks` 같은 설정은 보존하며, 기존 파일은
+`settings.json.cliproxy-manager.bak`으로 백업한 뒤 원자적으로 교체합니다. JSON이
+손상되었거나 `env` 형식이 잘못된 경우에는 원본을 덮어쓰지 않습니다.
+
+프로젝트 `.claude/settings.json`, 로컬 설정, 관리 정책 및 실행 옵션이 사용자 전역
+설정보다 우선할 수 있습니다. 저장 후 새 Claude Code 세션을 시작해 적용 상태를
+확인하는 것을 권장합니다. 이 기능은 CLIProxyAPI `config.yaml`이나 Claude Code의
+Auto mode 분류기 설정을 수정하지 않습니다.
 
 ## 인증 만료 처리
 

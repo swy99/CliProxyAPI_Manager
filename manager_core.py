@@ -34,6 +34,12 @@ STARTUP_REGISTRY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 STARTUP_VALUE_NAME = "CLIProxyAPI Manager"
 VERSION_PATTERN = re.compile(r"CLIProxyAPI Version:\s*v?([^,\s]+)", re.IGNORECASE)
 LOGIN_FLAG_PATTERN = re.compile(r"^\s+-(?P<flag>[\w-]+-login)\s*$", re.MULTILINE)
+CLAUDE_CODE_SUBAGENT_MODEL_KEY = "CLAUDE_CODE_SUBAGENT_MODEL"
+ANTHROPIC_DEFAULT_HAIKU_MODEL_KEY = "ANTHROPIC_DEFAULT_HAIKU_MODEL"
+CLAUDE_SETTINGS_BACKUP_SUFFIX = ".cliproxy-manager.bak"
+MAX_CLAUDE_SETTINGS_WRITE_ATTEMPTS = 3
+MAX_MODELS_RESPONSE_BYTES = 2_000_000
+MODELS_RESPONSE_CHUNK_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,12 @@ class ManagerConfig:
             host = f"[{host}]"
         scheme = "https" if self.tls_enabled else "http"
         return f"{scheme}://{host}:{self.port}/v1/models"
+
+
+@dataclass(frozen=True)
+class ClaudeCodeModelSettings:
+    subagent_model: str | None
+    haiku_model: str | None
 
 
 @dataclass(frozen=True)
@@ -157,6 +169,271 @@ def load_config(work_dir: Path) -> ManagerConfig:
         api_key=api_key,
         tls_enabled=tls_enabled,
     )
+
+
+def claude_code_settings_path(home: Path | None = None) -> Path:
+    return (home or Path.home()) / ".claude" / "settings.json"
+
+
+def claude_code_settings_backup_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}{CLAUDE_SETTINGS_BACKUP_SUFFIX}")
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"지원하지 않는 JSON 상수입니다: {value}")
+
+
+def _parse_claude_settings_document(raw: bytes) -> dict[str, Any]:
+    try:
+        text = raw.decode("utf-8-sig")
+        if not text.strip():
+            raise ValueError("설정 파일이 비어 있습니다.")
+        loaded = json.loads(text, parse_constant=_reject_json_constant)
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"Claude Code 설정 파일을 읽을 수 없습니다: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError("Claude Code settings.json의 최상위 값은 객체여야 합니다.")
+    env = loaded.get("env")
+    if env is not None and not isinstance(env, dict):
+        raise ValueError("Claude Code settings.json의 env 값은 객체여야 합니다.")
+    return loaded
+
+
+def _read_claude_settings_state(
+    path: Path,
+) -> tuple[dict[str, Any], bytes | None]:
+    if not path.exists():
+        return {}, None
+    if not path.is_file():
+        raise ValueError(f"Claude Code 설정 경로가 파일이 아닙니다: {path}")
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"Claude Code 설정 파일을 읽을 수 없습니다: {exc}") from exc
+    return _parse_claude_settings_document(raw), raw
+
+
+def _load_claude_settings_document(path: Path) -> dict[str, Any]:
+    return _read_claude_settings_state(path)[0]
+
+
+def _model_setting_value(env: dict[str, Any], key: str) -> str | None:
+    if key not in env:
+        return None
+    value = env[key]
+    if not isinstance(value, str):
+        raise ValueError(f"Claude Code settings.json의 env.{key} 값은 문자열이어야 합니다.")
+    normalized = value.strip()
+    return normalized or None
+
+
+def load_claude_code_model_settings(
+    path: Path | None = None,
+) -> ClaudeCodeModelSettings:
+    settings_path = path or claude_code_settings_path()
+    document = _load_claude_settings_document(settings_path)
+    env = document.get("env") or {}
+    return ClaudeCodeModelSettings(
+        subagent_model=_model_setting_value(env, CLAUDE_CODE_SUBAGENT_MODEL_KEY),
+        haiku_model=_model_setting_value(env, ANTHROPIC_DEFAULT_HAIKU_MODEL_KEY),
+    )
+
+
+def _normalized_model_override(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _write_claude_settings_temp(
+    path: Path,
+    document: dict[str, Any],
+) -> Path:
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(
+                document,
+                handle,
+                ensure_ascii=False,
+                indent=2,
+                allow_nan=False,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    return temp_path
+
+
+def _write_claude_settings_backup_temp(path: Path, raw: bytes) -> Path:
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}{CLAUDE_SETTINGS_BACKUP_SUFFIX}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    return temp_path
+
+
+def _current_claude_settings_bytes(path: Path) -> bytes | None:
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise RuntimeError(f"Claude Code 설정 경로가 파일이 아닙니다: {path}")
+    return path.read_bytes()
+
+
+def save_claude_code_model_settings(
+    settings: ClaudeCodeModelSettings,
+    path: Path | None = None,
+) -> None:
+    settings_path = path or claude_code_settings_path()
+    subagent_model = _normalized_model_override(settings.subagent_model)
+    haiku_model = _normalized_model_override(settings.haiku_model)
+
+    for _attempt in range(MAX_CLAUDE_SETTINGS_WRITE_ATTEMPTS):
+        document, original_raw = _read_claude_settings_state(settings_path)
+        if original_raw is None and subagent_model is None and haiku_model is None:
+            return
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+        env_was_present = "env" in document
+        env = dict(document.get("env") or {})
+        updates = {
+            CLAUDE_CODE_SUBAGENT_MODEL_KEY: subagent_model,
+            ANTHROPIC_DEFAULT_HAIKU_MODEL_KEY: haiku_model,
+        }
+        for key, value in updates.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
+        if env or env_was_present:
+            document["env"] = env
+
+        temp_path = _write_claude_settings_temp(settings_path, document)
+        backup_temp_path: Path | None = None
+        try:
+            if _current_claude_settings_bytes(settings_path) != original_raw:
+                continue
+            if original_raw is not None:
+                backup_path = claude_code_settings_backup_path(settings_path)
+                backup_temp_path = _write_claude_settings_backup_temp(
+                    settings_path,
+                    original_raw,
+                )
+                os.replace(backup_temp_path, backup_path)
+                backup_temp_path = None
+                if _current_claude_settings_bytes(settings_path) != original_raw:
+                    continue
+            os.replace(temp_path, settings_path)
+            temp_path = None
+            return
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+            if backup_temp_path is not None:
+                backup_temp_path.unlink(missing_ok=True)
+
+    raise RuntimeError(
+        "Claude Code settings.json이 다른 프로그램에서 계속 변경되어 저장하지 못했습니다."
+    )
+
+
+def _read_models_response(response: Any, deadline: float) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    read_chunk = getattr(response, "read1", response.read)
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("모델 목록 응답 시간이 초과되었습니다.")
+        chunk = read_chunk(MODELS_RESPONSE_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_MODELS_RESPONSE_BYTES:
+            raise ValueError("모델 목록 응답이 허용 크기를 초과했습니다.")
+        chunks.append(chunk)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("모델 목록 응답 시간이 초과되었습니다.")
+    return b"".join(chunks)
+
+
+def fetch_cliproxy_model_ids(
+    config: ManagerConfig,
+    timeout: float = 5,
+) -> tuple[str, ...]:
+    request = urllib.request.Request(
+        config.health_url,
+        headers={"User-Agent": "CLIProxyAPI-Manager/1.0"},
+    )
+    if config.api_key:
+        request.add_header("Authorization", f"Bearer {config.api_key}")
+    context = ssl._create_unverified_context() if config.tls_enabled else None
+    deadline = time.monotonic() + timeout
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=timeout,
+            context=context,
+        ) as response:
+            status = int(response.status)
+            if not 200 <= status < 300:
+                raise RuntimeError(f"모델 목록 조회 실패: HTTP {status}")
+            body = _read_models_response(response, deadline)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"모델 목록 조회 실패: HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"모델 목록 조회 실패: {exc}") from exc
+
+    try:
+        loaded = json.loads(
+            body.decode("utf-8-sig"),
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"모델 목록 응답이 올바른 JSON이 아닙니다: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError("모델 목록 응답의 최상위 값은 객체여야 합니다.")
+    entries = loaded.get("data")
+    if not isinstance(entries, list):
+        raise ValueError("모델 목록 응답의 data 값은 배열이어야 합니다.")
+
+    model_ids: list[str] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(f"모델 목록의 {index + 1}번째 항목은 객체여야 합니다.")
+        model_id = entry.get("id")
+        if not isinstance(model_id, str):
+            raise ValueError(
+                f"모델 목록의 {index + 1}번째 id 값은 문자열이어야 합니다."
+            )
+        normalized = model_id.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        model_ids.append(normalized)
+    if not model_ids:
+        raise ValueError("CLIProxyAPI가 사용 가능한 모델을 반환하지 않았습니다.")
+    return tuple(model_ids)
 
 
 def parse_datetime(value: Any) -> dt.datetime | None:

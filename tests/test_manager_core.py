@@ -6,19 +6,27 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+import urllib.error
 import zipfile
 
 from manager_core import (
     BackendUpdater,
+    ClaudeCodeModelSettings,
     GitHubReleaseClient,
+    ManagerConfig,
     ReleaseAsset,
     ReleaseInfo,
     ServerProcessManager,
     ServerStatus,
+    claude_code_settings_backup_path,
+    claude_code_settings_path,
+    fetch_cliproxy_model_ids,
     is_newer_version,
+    load_claude_code_model_settings,
     load_config,
     parse_datetime,
     parse_version_output,
+    save_claude_code_model_settings,
     scan_auth_records,
     select_windows_asset,
     startup_command,
@@ -60,6 +68,303 @@ class ConfigTests(unittest.TestCase):
             (root / "config.yaml").write_text("port: 70000\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "1~65535"):
                 load_config(root)
+
+
+class ClaudeCodeSettingsTests(unittest.TestCase):
+    def test_settings_path_uses_supplied_home(self) -> None:
+        home = Path("C:/Users/example")
+        self.assertEqual(
+            claude_code_settings_path(home),
+            home / ".claude" / "settings.json",
+        )
+
+    def test_missing_file_loads_unset_models(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / ".claude" / "settings.json"
+            self.assertEqual(
+                load_claude_code_model_settings(path),
+                ClaudeCodeModelSettings(None, None),
+            )
+
+    def test_loads_bom_and_trims_model_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "env": {
+                            "CLAUDE_CODE_SUBAGENT_MODEL": " gpt-5.4 ",
+                            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
+                        }
+                    }
+                ),
+                encoding="utf-8-sig",
+            )
+            self.assertEqual(
+                load_claude_code_model_settings(path),
+                ClaudeCodeModelSettings("gpt-5.4", "gpt-5-mini"),
+            )
+
+    def test_saves_models_without_replacing_unrelated_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / ".claude" / "settings.json"
+            path.parent.mkdir()
+            original = {
+                "$schema": "https://json.schemastore.org/claude-code-settings.json",
+                "permissions": {"allow": ["Read"]},
+                "env": {
+                    "EXISTING_VALUE": "keep-me",
+                    "CLAUDE_CODE_SUBAGENT_MODEL": "old-model",
+                },
+            }
+            path.write_text(json.dumps(original), encoding="utf-8")
+
+            save_claude_code_model_settings(
+                ClaudeCodeModelSettings("gpt-5.4", "gpt-5-mini"),
+                path,
+            )
+
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["$schema"], original["$schema"])
+            self.assertEqual(saved["permissions"], original["permissions"])
+            self.assertEqual(saved["env"]["EXISTING_VALUE"], "keep-me")
+            self.assertEqual(
+                saved["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "gpt-5.4"
+            )
+            self.assertEqual(
+                saved["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-5-mini"
+            )
+            backup = claude_code_settings_backup_path(path)
+            self.assertEqual(json.loads(backup.read_text(encoding="utf-8")), original)
+
+    def test_unset_models_remove_only_managed_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "env": {
+                            "EXISTING_VALUE": "keep-me",
+                            "CLAUDE_CODE_SUBAGENT_MODEL": "gpt-5.4",
+                            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            save_claude_code_model_settings(
+                ClaudeCodeModelSettings(None, None),
+                path,
+            )
+
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["env"], {"EXISTING_VALUE": "keep-me"})
+
+    def test_malformed_json_is_not_overwritten(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "settings.json"
+            path.write_bytes(b"{broken")
+            before = path.read_bytes()
+
+            with self.assertRaisesRegex(ValueError, "설정 파일을 읽을 수 없습니다"):
+                save_claude_code_model_settings(
+                    ClaudeCodeModelSettings("gpt-5.4", None),
+                    path,
+                )
+
+            self.assertEqual(path.read_bytes(), before)
+            self.assertFalse(claude_code_settings_backup_path(path).exists())
+
+    def test_rejects_non_object_env(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "settings.json"
+            path.write_text('{"env": []}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "env 값은 객체"):
+                load_claude_code_model_settings(path)
+
+    def test_retries_and_merges_external_change_during_save(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "settings.json"
+            path.write_text(
+                json.dumps({"env": {"EXISTING_VALUE": "old"}}),
+                encoding="utf-8",
+            )
+            external = {
+                "permissions": {"deny": ["Write"]},
+                "env": {"EXISTING_VALUE": "new"},
+            }
+            checks = 0
+
+            def current_bytes(current_path: Path) -> bytes | None:
+                nonlocal checks
+                checks += 1
+                if checks == 1:
+                    current_path.write_text(json.dumps(external), encoding="utf-8")
+                return current_path.read_bytes()
+
+            with mock.patch(
+                "manager_core._current_claude_settings_bytes",
+                side_effect=current_bytes,
+            ):
+                save_claude_code_model_settings(
+                    ClaudeCodeModelSettings("gpt-5.4", None),
+                    path,
+                )
+
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["permissions"], external["permissions"])
+            self.assertEqual(saved["env"]["EXISTING_VALUE"], "new")
+            self.assertEqual(
+                saved["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "gpt-5.4"
+            )
+            backup = json.loads(
+                claude_code_settings_backup_path(path).read_text(encoding="utf-8")
+            )
+            self.assertEqual(backup, external)
+
+    @mock.patch("manager_core.os.replace", side_effect=PermissionError("locked"))
+    def test_replace_failure_keeps_original_and_cleans_temporary_files(
+        self, _mock_replace: mock.Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            path = root / "settings.json"
+            path.write_text('{"env": {"EXISTING_VALUE": "keep"}}', encoding="utf-8")
+            before = path.read_bytes()
+
+            with self.assertRaises(PermissionError):
+                save_claude_code_model_settings(
+                    ClaudeCodeModelSettings("gpt-5.4", None),
+                    path,
+                )
+
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(list(root.glob(".*.tmp")), [])
+
+
+class FakeHttpResponse:
+    def __init__(self, payload: bytes, status: int = 200):
+        self.payload = payload
+        self.status = status
+        self.offset = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def read(self, size: int = -1) -> bytes:
+        if self.offset >= len(self.payload):
+            return b""
+        end = len(self.payload) if size < 0 else self.offset + size
+        chunk = self.payload[self.offset : end]
+        self.offset += len(chunk)
+        return chunk
+
+
+class ModelDiscoveryTests(unittest.TestCase):
+    @staticmethod
+    def _config(*, api_key: str | None = "test-key", tls: bool = False):
+        root = Path("C:/cliproxy")
+        return ManagerConfig(
+            work_dir=root,
+            config_path=root / "config.yaml",
+            executable_path=root / "cli-proxy-api.exe",
+            auth_dir=root / "auth",
+            host="127.0.0.1",
+            port=8317,
+            api_key=api_key,
+            tls_enabled=tls,
+        )
+
+    @mock.patch("manager_core.urllib.request.urlopen")
+    def test_fetches_unique_model_ids_with_authentication(
+        self, mock_urlopen: mock.Mock
+    ) -> None:
+        mock_urlopen.return_value = FakeHttpResponse(
+            json.dumps(
+                {
+                    "object": "list",
+                    "data": [
+                        {"id": " gpt-5.4 "},
+                        {"id": "gpt-5-mini"},
+                        {"id": "gpt-5.4"},
+                        {"id": "  "},
+                    ],
+                }
+            ).encode("utf-8")
+        )
+
+        models = fetch_cliproxy_model_ids(self._config())
+
+        self.assertEqual(models, ("gpt-5.4", "gpt-5-mini"))
+        request = mock_urlopen.call_args.args[0]
+        headers = {key.casefold(): value for key, value in request.header_items()}
+        self.assertEqual(headers["authorization"], "Bearer test-key")
+        self.assertEqual(headers["user-agent"], "CLIProxyAPI-Manager/1.0")
+        self.assertEqual(mock_urlopen.call_args.kwargs["timeout"], 5)
+
+    @mock.patch("manager_core.ssl._create_unverified_context")
+    @mock.patch("manager_core.urllib.request.urlopen")
+    def test_uses_tls_context_without_adding_empty_auth_header(
+        self, mock_urlopen: mock.Mock, mock_context: mock.Mock
+    ) -> None:
+        tls_context = object()
+        mock_context.return_value = tls_context
+        mock_urlopen.return_value = FakeHttpResponse(b'{"data": [{"id": "gpt"}]}')
+
+        self.assertEqual(
+            fetch_cliproxy_model_ids(self._config(api_key=None, tls=True)),
+            ("gpt",),
+        )
+
+        request = mock_urlopen.call_args.args[0]
+        headers = {key.casefold(): value for key, value in request.header_items()}
+        self.assertNotIn("authorization", headers)
+        self.assertIs(mock_urlopen.call_args.kwargs["context"], tls_context)
+
+    @mock.patch("manager_core.urllib.request.urlopen")
+    def test_http_error_is_reported(self, mock_urlopen: mock.Mock) -> None:
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "http://127.0.0.1:8317/v1/models",
+            401,
+            "Unauthorized",
+            None,
+            None,
+        )
+        with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
+            fetch_cliproxy_model_ids(self._config())
+
+    def test_model_response_has_an_overall_deadline(self) -> None:
+        response = FakeHttpResponse(b'{"data": [{"id": "gpt"}]}')
+        with mock.patch(
+            "manager_core.urllib.request.urlopen",
+            return_value=response,
+        ), mock.patch(
+            "manager_core.time.monotonic",
+            side_effect=(0.0, 0.0, 6.0),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "응답 시간이 초과"):
+                fetch_cliproxy_model_ids(self._config(), timeout=5)
+
+    @mock.patch("manager_core.urllib.request.urlopen")
+    def test_rejects_malformed_or_empty_model_responses(
+        self, mock_urlopen: mock.Mock
+    ) -> None:
+        cases = (
+            (b"{", "올바른 JSON"),
+            (b"[]", "최상위 값은 객체"),
+            (b'{"data": {}}', "data 값은 배열"),
+            (b'{"data": [{"id": 123}]}', "id 값은 문자열"),
+            (b'{"data": [{"id": " "}]}', "사용 가능한 모델"),
+        )
+        for payload, message in cases:
+            with self.subTest(message=message):
+                mock_urlopen.return_value = FakeHttpResponse(payload)
+                with self.assertRaisesRegex(ValueError, message):
+                    fetch_cliproxy_model_ids(self._config())
 
 
 class AuthTests(unittest.TestCase):

@@ -24,13 +24,18 @@ from PIL import Image, ImageDraw
 from manager_core import (
     AuthRecord,
     BackendUpdater,
+    ClaudeCodeModelSettings,
     ManagerConfig,
     ServerProcessManager,
     ServerStatus,
+    claude_code_settings_path,
+    fetch_cliproxy_model_ids,
+    load_claude_code_model_settings,
     load_config,
     read_binary_version,
     read_startup_command,
     register_startup,
+    save_claude_code_model_settings,
     scan_auth_records,
     startup_command,
     supported_login_flags,
@@ -60,6 +65,28 @@ STATUS_LABELS = {
     "unknown": "만료 정보 없음",
     "invalid": "파일 오류",
 }
+SUBAGENT_INHERIT_VALUE = "inherit"
+HAIKU_DEFAULT_VALUE = "default"
+
+
+def model_override_from_display(value: str, unset_value: str) -> str | None:
+    normalized = value.strip()
+    if not normalized or normalized.casefold() == unset_value.casefold():
+        return None
+    return normalized
+
+
+def model_choice_values(
+    unset_value: str,
+    current_value: str,
+    model_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    choices: list[str] = [unset_value]
+    current = current_value.strip()
+    if current and current.casefold() != unset_value.casefold():
+        choices.append(current)
+    choices.extend(model_ids)
+    return tuple(dict.fromkeys(choices))
 
 
 def configure_logging(work_dir: Path) -> None:
@@ -132,6 +159,8 @@ class ManagerApp:
         self.events: queue.Queue[tuple[Any, ...]] = queue.Queue()
         self.stop_event = threading.Event()
         self.update_event = threading.Event()
+        self.model_refresh_event = threading.Event()
+        self.claude_settings_save_event = threading.Event()
         self.update_guard = threading.Lock()
         self.last_update_attempt = time.monotonic() - UPDATE_INTERVAL_SECONDS
         self.restart_backoff = STATUS_INTERVAL_SECONDS
@@ -143,10 +172,22 @@ class ManagerApp:
         self.expiry_dialog: tk.Toplevel | None = None
         self.start_minimized = start_minimized
         self.current_version = read_binary_version(config.executable_path)
+        self.available_model_ids: tuple[str, ...] = ()
+        self.model_refresh_attempted = False
         self.login_flags = supported_login_flags(config.executable_path)
         self.login_by_label = {
             LOGIN_LABELS.get(flag, flag): flag for flag in self.login_flags
         }
+        self.claude_settings_path = claude_code_settings_path()
+        claude_settings_error: str | None = None
+        try:
+            claude_settings = load_claude_code_model_settings(
+                self.claude_settings_path
+            )
+        except Exception as exc:
+            self.logger.warning("Claude Code settings load failed: %s", exc)
+            claude_settings = ClaudeCodeModelSettings(None, None)
+            claude_settings_error = str(exc)
 
         self.server_text = tk.StringVar(value="확인 중…")
         self.server_detail = tk.StringVar(value="")
@@ -159,6 +200,18 @@ class ManagerApp:
         self.login_selection = tk.StringVar(
             value=next(iter(self.login_by_label), "")
         )
+        self.subagent_model_var = tk.StringVar(
+            value=claude_settings.subagent_model or SUBAGENT_INHERIT_VALUE
+        )
+        self.haiku_model_var = tk.StringVar(
+            value=claude_settings.haiku_model or HAIKU_DEFAULT_VALUE
+        )
+        initial_claude_status = (
+            f"설정 파일 오류: {claude_settings_error}"
+            if claude_settings_error
+            else f"전역 설정: {self.claude_settings_path}"
+        )
+        self.claude_settings_status = tk.StringVar(value=initial_claude_status)
 
         self._configure_window()
         self._build_window()
@@ -180,8 +233,8 @@ class ManagerApp:
 
     def _configure_window(self) -> None:
         self.root.title(f"{APP_NAME} {APP_VERSION}")
-        self.root.geometry("720x520")
-        self.root.minsize(650, 470)
+        self.root.geometry("780x650")
+        self.root.minsize(700, 600)
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
         self.root.withdraw()
 
@@ -260,6 +313,77 @@ class ManagerApp:
             state=tk.NORMAL if self.login_by_label else tk.DISABLED,
         ).pack(side=tk.LEFT, padx=(6, 0))
 
+        claude_box = ttk.LabelFrame(
+            outer,
+            text="Claude Code 전역 모델 설정",
+            padding=(10, 8),
+        )
+        claude_box.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(claude_box, text="전체 서브에이전트").grid(
+            row=0, column=0, sticky="w", padx=(0, 8), pady=2
+        )
+        self.subagent_model_combo = ttk.Combobox(
+            claude_box,
+            state="normal",
+            width=34,
+            textvariable=self.subagent_model_var,
+            values=model_choice_values(
+                SUBAGENT_INHERIT_VALUE,
+                self.subagent_model_var.get(),
+                self.available_model_ids,
+            ),
+        )
+        self.subagent_model_combo.grid(
+            row=0, column=1, sticky="ew", pady=2
+        )
+        ttk.Label(claude_box, text="Haiku / 백그라운드").grid(
+            row=1, column=0, sticky="w", padx=(0, 8), pady=2
+        )
+        self.haiku_model_combo = ttk.Combobox(
+            claude_box,
+            state="normal",
+            width=34,
+            textvariable=self.haiku_model_var,
+            values=model_choice_values(
+                HAIKU_DEFAULT_VALUE,
+                self.haiku_model_var.get(),
+                self.available_model_ids,
+            ),
+        )
+        self.haiku_model_combo.grid(row=1, column=1, sticky="ew", pady=2)
+
+        claude_buttons = ttk.Frame(claude_box)
+        claude_buttons.grid(row=0, column=2, rowspan=2, padx=(10, 0))
+        self.refresh_models_button = ttk.Button(
+            claude_buttons,
+            text="모델 목록 새로고침",
+            command=lambda: self.request_model_refresh(True),
+        )
+        self.refresh_models_button.pack(fill=tk.X)
+        self.save_claude_settings_button = ttk.Button(
+            claude_buttons,
+            text="전역 설정 저장",
+            command=self.request_claude_settings_save,
+        )
+        self.save_claude_settings_button.pack(fill=tk.X, pady=(6, 0))
+
+        ttk.Label(
+            claude_box,
+            text=(
+                "프로젝트·로컬·관리 설정이 이 값을 덮을 수 있습니다. "
+                "저장 후 새 Claude Code 세션 시작을 권장합니다."
+            ),
+            style="Subtle.TLabel",
+            wraplength=680,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 1))
+        ttk.Label(
+            claude_box,
+            textvariable=self.claude_settings_status,
+            style="Subtle.TLabel",
+            wraplength=680,
+        ).grid(row=3, column=0, columnspan=3, sticky="w")
+        claude_box.columnconfigure(1, weight=1)
+
         auth_box = ttk.LabelFrame(outer, text="인증 토큰", padding=(10, 8))
         auth_box.pack(fill=tk.BOTH, expand=True)
         columns = ("provider", "account", "expiry", "status")
@@ -268,7 +392,7 @@ class ManagerApp:
             columns=columns,
             show="headings",
             selectmode="browse",
-            height=8,
+            height=6,
         )
         self.auth_tree.heading("provider", text="공급자")
         self.auth_tree.heading("account", text="계정")
@@ -402,6 +526,16 @@ class ManagerApp:
                     "인증 미완료",
                     f"{label} 로그인 프로세스가 코드 {return_code}(으)로 끝났습니다.",
                 )
+        elif kind == "models-loaded":
+            _, model_ids, manual = event
+            self._finish_model_refresh(model_ids, None, manual)
+        elif kind == "models-load-failed":
+            _, error, manual = event
+            self._finish_model_refresh((), error, manual)
+        elif kind == "claude-settings-saved":
+            self._finish_claude_settings_save(None)
+        elif kind == "claude-settings-save-failed":
+            self._finish_claude_settings_save(event[1])
         elif kind == "ui-action":
             self._handle_ui_action(*event[1:])
 
@@ -450,6 +584,9 @@ class ManagerApp:
         )
         self.tray.icon = _tray_image(tray_color)
         self.tray.title = f"{APP_NAME} - {self.server_text.get()}"
+        if status.healthy and not self.model_refresh_attempted:
+            self.model_refresh_attempted = True
+            self.request_model_refresh(False)
 
         for item_id in self.auth_tree.get_children():
             self.auth_tree.delete(item_id)
@@ -575,6 +712,132 @@ class ManagerApp:
                     self.request_update(False)
 
             self.stop_event.wait(STATUS_INTERVAL_SECONDS)
+
+    def _refresh_model_choices(self) -> None:
+        self.subagent_model_combo.configure(
+            values=model_choice_values(
+                SUBAGENT_INHERIT_VALUE,
+                self.subagent_model_var.get(),
+                self.available_model_ids,
+            )
+        )
+        self.haiku_model_combo.configure(
+            values=model_choice_values(
+                HAIKU_DEFAULT_VALUE,
+                self.haiku_model_var.get(),
+                self.available_model_ids,
+            )
+        )
+
+    def request_model_refresh(self, manual: bool) -> None:
+        if self.model_refresh_event.is_set():
+            if manual:
+                self.claude_settings_status.set("모델 목록을 이미 조회 중입니다.")
+            return
+        self.model_refresh_event.set()
+        self.refresh_models_button.configure(state=tk.DISABLED)
+        self.claude_settings_status.set("CLIProxyAPI 모델 목록 조회 중…")
+        threading.Thread(
+            target=self._model_refresh_worker,
+            args=(manual,),
+            name="model-list-refresh",
+            daemon=True,
+        ).start()
+
+    def _model_refresh_worker(self, manual: bool) -> None:
+        try:
+            model_ids = fetch_cliproxy_model_ids(self.config)
+            self.events.put(("models-loaded", model_ids, manual))
+        except Exception as exc:
+            self.logger.warning("CLIProxyAPI model list refresh failed: %s", exc)
+            self.events.put(("models-load-failed", str(exc), manual))
+
+    def _finish_model_refresh(
+        self,
+        model_ids: tuple[str, ...],
+        error: str | None,
+        manual: bool,
+    ) -> None:
+        self.model_refresh_event.clear()
+        self.refresh_models_button.configure(state=tk.NORMAL)
+        if error:
+            self.claude_settings_status.set(
+                f"모델 목록 조회 실패: {error} · 모델 ID를 직접 입력할 수 있습니다."
+            )
+            if manual:
+                messagebox.showerror(
+                    "모델 목록 조회 실패",
+                    f"{error}\n\n현재 입력값은 유지되며 모델 ID를 직접 입력할 수 있습니다.",
+                )
+            return
+
+        self.available_model_ids = tuple(model_ids)
+        self._refresh_model_choices()
+        self.claude_settings_status.set(
+            f"CLIProxyAPI에서 모델 {len(model_ids)}개를 불러왔습니다."
+        )
+
+    def request_claude_settings_save(self) -> None:
+        if self.claude_settings_save_event.is_set():
+            self.claude_settings_status.set("Claude Code 설정을 이미 저장 중입니다.")
+            return
+        settings = ClaudeCodeModelSettings(
+            subagent_model=model_override_from_display(
+                self.subagent_model_var.get(),
+                SUBAGENT_INHERIT_VALUE,
+            ),
+            haiku_model=model_override_from_display(
+                self.haiku_model_var.get(),
+                HAIKU_DEFAULT_VALUE,
+            ),
+        )
+        self.claude_settings_save_event.set()
+        self.subagent_model_combo.configure(state=tk.DISABLED)
+        self.haiku_model_combo.configure(state=tk.DISABLED)
+        self.save_claude_settings_button.configure(state=tk.DISABLED)
+        self.claude_settings_status.set("Claude Code 전역 설정 저장 중…")
+        threading.Thread(
+            target=self._claude_settings_save_worker,
+            args=(settings,),
+            name="claude-settings-save",
+            daemon=True,
+        ).start()
+
+    def _claude_settings_save_worker(
+        self,
+        settings: ClaudeCodeModelSettings,
+    ) -> None:
+        try:
+            save_claude_code_model_settings(settings, self.claude_settings_path)
+            self.events.put(("claude-settings-saved",))
+        except Exception as exc:
+            self.logger.warning("Claude Code settings save failed: %s", exc)
+            self.events.put(("claude-settings-save-failed", str(exc)))
+
+    def _finish_claude_settings_save(self, error: str | None) -> None:
+        self.claude_settings_save_event.clear()
+        self.subagent_model_combo.configure(state=tk.NORMAL)
+        self.haiku_model_combo.configure(state=tk.NORMAL)
+        self.save_claude_settings_button.configure(state=tk.NORMAL)
+        if error:
+            self.claude_settings_status.set(f"전역 설정 저장 실패: {error}")
+            messagebox.showerror(
+                "Claude Code 설정 저장 실패",
+                f"{error}\n\n기존 settings.json은 변경되지 않았습니다.",
+            )
+            return
+
+        self.claude_settings_status.set(
+            f"전역 설정을 저장했습니다: {self.claude_settings_path}"
+        )
+        messagebox.showinfo(
+            "Claude Code 설정 저장 완료",
+            (
+                "전역 모델 설정을 저장했습니다.\n\n"
+                "프로젝트·로컬·관리 설정이 이 값을 덮을 수 있습니다. "
+                "새 Claude Code 세션을 시작해 적용 상태를 확인하세요."
+            ),
+        )
 
     def request_update(self, manual: bool) -> None:
         with self.update_guard:
