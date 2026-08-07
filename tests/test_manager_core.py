@@ -94,6 +94,9 @@ class ClaudeCodeSettingsTests(unittest.TestCase):
                     {
                         "env": {
                             "CLAUDE_CODE_SUBAGENT_MODEL": " gpt-5.4 ",
+                            "ANTHROPIC_DEFAULT_FABLE_MODEL": "gpt-5.4",
+                            "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.3-codex",
+                            "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.2-codex",
                             "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
                         }
                     }
@@ -102,7 +105,13 @@ class ClaudeCodeSettingsTests(unittest.TestCase):
             )
             self.assertEqual(
                 load_claude_code_model_settings(path),
-                ClaudeCodeModelSettings("gpt-5.4", "gpt-5-mini"),
+                ClaudeCodeModelSettings(
+                    subagent_model="gpt-5.4",
+                    fable_model="gpt-5.4",
+                    opus_model="gpt-5.3-codex",
+                    sonnet_model="gpt-5.2-codex",
+                    haiku_model="gpt-5-mini",
+                ),
             )
 
     def test_saves_models_without_replacing_unrelated_settings(self) -> None:
@@ -120,7 +129,13 @@ class ClaudeCodeSettingsTests(unittest.TestCase):
             path.write_text(json.dumps(original), encoding="utf-8")
 
             save_claude_code_model_settings(
-                ClaudeCodeModelSettings("gpt-5.4", "gpt-5-mini"),
+                ClaudeCodeModelSettings(
+                    subagent_model="gpt-5.4",
+                    fable_model="gpt-5.4",
+                    opus_model="gpt-5.3-codex",
+                    sonnet_model="gpt-5.2-codex",
+                    haiku_model="gpt-5-mini",
+                ),
                 path,
             )
 
@@ -130,6 +145,15 @@ class ClaudeCodeSettingsTests(unittest.TestCase):
             self.assertEqual(saved["env"]["EXISTING_VALUE"], "keep-me")
             self.assertEqual(
                 saved["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "gpt-5.4"
+            )
+            self.assertEqual(
+                saved["env"]["ANTHROPIC_DEFAULT_FABLE_MODEL"], "gpt-5.4"
+            )
+            self.assertEqual(
+                saved["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"], "gpt-5.3-codex"
+            )
+            self.assertEqual(
+                saved["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"], "gpt-5.2-codex"
             )
             self.assertEqual(
                 saved["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "gpt-5-mini"
@@ -146,6 +170,9 @@ class ClaudeCodeSettingsTests(unittest.TestCase):
                         "env": {
                             "EXISTING_VALUE": "keep-me",
                             "CLAUDE_CODE_SUBAGENT_MODEL": "gpt-5.4",
+                            "ANTHROPIC_DEFAULT_FABLE_MODEL": "gpt-5.4",
+                            "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.3-codex",
+                            "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.2-codex",
                             "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
                         }
                     }

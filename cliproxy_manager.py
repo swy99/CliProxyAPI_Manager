@@ -66,7 +66,8 @@ STATUS_LABELS = {
     "invalid": "파일 오류",
 }
 SUBAGENT_INHERIT_VALUE = "inherit"
-HAIKU_DEFAULT_VALUE = "default"
+MODEL_DEFAULT_VALUE = "default"
+HAIKU_DEFAULT_VALUE = MODEL_DEFAULT_VALUE
 
 
 def model_override_from_display(value: str, unset_value: str) -> str | None:
@@ -186,7 +187,7 @@ class ManagerApp:
             )
         except Exception as exc:
             self.logger.warning("Claude Code settings load failed: %s", exc)
-            claude_settings = ClaudeCodeModelSettings(None, None)
+            claude_settings = ClaudeCodeModelSettings(None, None, None, None, None)
             claude_settings_error = str(exc)
 
         self.server_text = tk.StringVar(value="확인 중…")
@@ -203,8 +204,17 @@ class ManagerApp:
         self.subagent_model_var = tk.StringVar(
             value=claude_settings.subagent_model or SUBAGENT_INHERIT_VALUE
         )
+        self.fable_model_var = tk.StringVar(
+            value=claude_settings.fable_model or MODEL_DEFAULT_VALUE
+        )
+        self.opus_model_var = tk.StringVar(
+            value=claude_settings.opus_model or MODEL_DEFAULT_VALUE
+        )
+        self.sonnet_model_var = tk.StringVar(
+            value=claude_settings.sonnet_model or MODEL_DEFAULT_VALUE
+        )
         self.haiku_model_var = tk.StringVar(
-            value=claude_settings.haiku_model or HAIKU_DEFAULT_VALUE
+            value=claude_settings.haiku_model or MODEL_DEFAULT_VALUE
         )
         initial_claude_status = (
             f"설정 파일 오류: {claude_settings_error}"
@@ -233,8 +243,8 @@ class ManagerApp:
 
     def _configure_window(self) -> None:
         self.root.title(f"{APP_NAME} {APP_VERSION}")
-        self.root.geometry("780x650")
-        self.root.minsize(700, 600)
+        self.root.geometry("780x720")
+        self.root.minsize(700, 650)
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
         self.root.withdraw()
 
@@ -333,27 +343,34 @@ class ManagerApp:
                 self.available_model_ids,
             ),
         )
-        self.subagent_model_combo.grid(
-            row=0, column=1, sticky="ew", pady=2
+        self.subagent_model_combo.grid(row=0, column=1, sticky="ew", pady=2)
+
+        model_rows = (
+            ("Fable 기본", self.fable_model_var, "fable_model_combo"),
+            ("Opus 기본", self.opus_model_var, "opus_model_combo"),
+            ("Sonnet 기본", self.sonnet_model_var, "sonnet_model_combo"),
+            ("Haiku 기본 / 백그라운드", self.haiku_model_var, "haiku_model_combo"),
         )
-        ttk.Label(claude_box, text="Haiku / 백그라운드").grid(
-            row=1, column=0, sticky="w", padx=(0, 8), pady=2
-        )
-        self.haiku_model_combo = ttk.Combobox(
-            claude_box,
-            state="normal",
-            width=34,
-            textvariable=self.haiku_model_var,
-            values=model_choice_values(
-                HAIKU_DEFAULT_VALUE,
-                self.haiku_model_var.get(),
-                self.available_model_ids,
-            ),
-        )
-        self.haiku_model_combo.grid(row=1, column=1, sticky="ew", pady=2)
+        for row, (label, variable, attribute) in enumerate(model_rows, start=1):
+            ttk.Label(claude_box, text=label).grid(
+                row=row, column=0, sticky="w", padx=(0, 8), pady=2
+            )
+            combo = ttk.Combobox(
+                claude_box,
+                state="normal",
+                width=34,
+                textvariable=variable,
+                values=model_choice_values(
+                    MODEL_DEFAULT_VALUE,
+                    variable.get(),
+                    self.available_model_ids,
+                ),
+            )
+            combo.grid(row=row, column=1, sticky="ew", pady=2)
+            setattr(self, attribute, combo)
 
         claude_buttons = ttk.Frame(claude_box)
-        claude_buttons.grid(row=0, column=2, rowspan=2, padx=(10, 0))
+        claude_buttons.grid(row=0, column=2, rowspan=5, padx=(10, 0))
         self.refresh_models_button = ttk.Button(
             claude_buttons,
             text="모델 목록 새로고침",
@@ -370,18 +387,18 @@ class ManagerApp:
         ttk.Label(
             claude_box,
             text=(
-                "프로젝트·로컬·관리 설정이 이 값을 덮을 수 있습니다. "
-                "저장 후 새 Claude Code 세션 시작을 권장합니다."
+                "전체 서브에이전트가 inherit이면 각 에이전트의 모델 계층이 "
+                "Fable·Opus·Sonnet·Haiku 기본값으로 해석됩니다."
             ),
             style="Subtle.TLabel",
             wraplength=680,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 1))
+        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 1))
         ttk.Label(
             claude_box,
             textvariable=self.claude_settings_status,
             style="Subtle.TLabel",
             wraplength=680,
-        ).grid(row=3, column=0, columnspan=3, sticky="w")
+        ).grid(row=6, column=0, columnspan=3, sticky="w")
         claude_box.columnconfigure(1, weight=1)
 
         auth_box = ttk.LabelFrame(outer, text="인증 토큰", padding=(10, 8))
@@ -721,13 +738,19 @@ class ManagerApp:
                 self.available_model_ids,
             )
         )
-        self.haiku_model_combo.configure(
-            values=model_choice_values(
-                HAIKU_DEFAULT_VALUE,
-                self.haiku_model_var.get(),
-                self.available_model_ids,
+        for variable, combo in (
+            (self.fable_model_var, self.fable_model_combo),
+            (self.opus_model_var, self.opus_model_combo),
+            (self.sonnet_model_var, self.sonnet_model_combo),
+            (self.haiku_model_var, self.haiku_model_combo),
+        ):
+            combo.configure(
+                values=model_choice_values(
+                    MODEL_DEFAULT_VALUE,
+                    variable.get(),
+                    self.available_model_ids,
+                )
             )
-        )
 
     def request_model_refresh(self, manual: bool) -> None:
         if self.model_refresh_event.is_set():
@@ -786,14 +809,32 @@ class ManagerApp:
                 self.subagent_model_var.get(),
                 SUBAGENT_INHERIT_VALUE,
             ),
+            fable_model=model_override_from_display(
+                self.fable_model_var.get(),
+                MODEL_DEFAULT_VALUE,
+            ),
+            opus_model=model_override_from_display(
+                self.opus_model_var.get(),
+                MODEL_DEFAULT_VALUE,
+            ),
+            sonnet_model=model_override_from_display(
+                self.sonnet_model_var.get(),
+                MODEL_DEFAULT_VALUE,
+            ),
             haiku_model=model_override_from_display(
                 self.haiku_model_var.get(),
-                HAIKU_DEFAULT_VALUE,
+                MODEL_DEFAULT_VALUE,
             ),
         )
         self.claude_settings_save_event.set()
-        self.subagent_model_combo.configure(state=tk.DISABLED)
-        self.haiku_model_combo.configure(state=tk.DISABLED)
+        for combo in (
+            self.subagent_model_combo,
+            self.fable_model_combo,
+            self.opus_model_combo,
+            self.sonnet_model_combo,
+            self.haiku_model_combo,
+        ):
+            combo.configure(state=tk.DISABLED)
         self.save_claude_settings_button.configure(state=tk.DISABLED)
         self.claude_settings_status.set("Claude Code 전역 설정 저장 중…")
         threading.Thread(
@@ -816,8 +857,14 @@ class ManagerApp:
 
     def _finish_claude_settings_save(self, error: str | None) -> None:
         self.claude_settings_save_event.clear()
-        self.subagent_model_combo.configure(state=tk.NORMAL)
-        self.haiku_model_combo.configure(state=tk.NORMAL)
+        for combo in (
+            self.subagent_model_combo,
+            self.fable_model_combo,
+            self.opus_model_combo,
+            self.sonnet_model_combo,
+            self.haiku_model_combo,
+        ):
+            combo.configure(state=tk.NORMAL)
         self.save_claude_settings_button.configure(state=tk.NORMAL)
         if error:
             self.claude_settings_status.set(f"전역 설정 저장 실패: {error}")

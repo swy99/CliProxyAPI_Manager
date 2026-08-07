@@ -10,7 +10,7 @@ from unittest import mock
 import pystray
 
 from cliproxy_manager import (
-    HAIKU_DEFAULT_VALUE,
+    MODEL_DEFAULT_VALUE,
     SUBAGENT_INHERIT_VALUE,
     ManagerApp,
     find_backend_dir,
@@ -61,9 +61,9 @@ class ModelSelectionTests(unittest.TestCase):
             model_override_from_display(" inherit ", SUBAGENT_INHERIT_VALUE)
         )
         self.assertIsNone(
-            model_override_from_display(" DEFAULT ", HAIKU_DEFAULT_VALUE)
+            model_override_from_display(" DEFAULT ", MODEL_DEFAULT_VALUE)
         )
-        self.assertIsNone(model_override_from_display("  ", HAIKU_DEFAULT_VALUE))
+        self.assertIsNone(model_override_from_display("  ", MODEL_DEFAULT_VALUE))
         self.assertEqual(
             model_override_from_display(" gpt-5.4 ", SUBAGENT_INHERIT_VALUE),
             "gpt-5.4",
@@ -85,17 +85,34 @@ class ModelSelectionTests(unittest.TestCase):
     ) -> None:
         app = ManagerApp.__new__(ManagerApp)
         app.subagent_model_var = FakeVariable("gpt-5.4")
+        app.fable_model_var = FakeVariable("gpt-5.4")
+        app.opus_model_var = FakeVariable("gpt-5.3-codex")
+        app.sonnet_model_var = FakeVariable("gpt-5.2-codex")
         app.haiku_model_var = FakeVariable("gpt-5-mini")
         app.claude_settings_status = FakeVariable()
         app.claude_settings_save_event = threading.Event()
         app.subagent_model_combo = FakeWidget()
+        app.fable_model_combo = FakeWidget()
+        app.opus_model_combo = FakeWidget()
+        app.sonnet_model_combo = FakeWidget()
         app.haiku_model_combo = FakeWidget()
         app.save_claude_settings_button = FakeWidget()
         app.claude_settings_path = Path("C:/Users/example/.claude/settings.json")
 
         app.request_claude_settings_save()
 
+        expected_settings = ClaudeCodeModelSettings(
+            subagent_model="gpt-5.4",
+            fable_model="gpt-5.4",
+            opus_model="gpt-5.3-codex",
+            sonnet_model="gpt-5.2-codex",
+            haiku_model="gpt-5-mini",
+        )
+        self.assertEqual(mock_thread.call_args.kwargs["args"], (expected_settings,))
         self.assertEqual(app.subagent_model_combo.state, "disabled")
+        self.assertEqual(app.fable_model_combo.state, "disabled")
+        self.assertEqual(app.opus_model_combo.state, "disabled")
+        self.assertEqual(app.sonnet_model_combo.state, "disabled")
         self.assertEqual(app.haiku_model_combo.state, "disabled")
         self.assertEqual(app.save_claude_settings_button.state, "disabled")
         mock_thread.return_value.start.assert_called_once_with()
@@ -103,6 +120,9 @@ class ModelSelectionTests(unittest.TestCase):
         with mock.patch("cliproxy_manager.messagebox.showinfo"):
             app._finish_claude_settings_save(None)
         self.assertEqual(app.subagent_model_combo.state, "normal")
+        self.assertEqual(app.fable_model_combo.state, "normal")
+        self.assertEqual(app.opus_model_combo.state, "normal")
+        self.assertEqual(app.sonnet_model_combo.state, "normal")
         self.assertEqual(app.haiku_model_combo.state, "normal")
         self.assertEqual(app.save_claude_settings_button.state, "normal")
         self.assertFalse(app.claude_settings_save_event.is_set())
@@ -153,7 +173,13 @@ class ModelSelectionTests(unittest.TestCase):
         app.claude_settings_path = Path("C:/Users/example/.claude/settings.json")
         app.events = queue.Queue()
         app.logger = mock.Mock()
-        settings = ClaudeCodeModelSettings("gpt-5.4", "gpt-5-mini")
+        settings = ClaudeCodeModelSettings(
+            subagent_model="gpt-5.4",
+            fable_model="gpt-5.4",
+            opus_model="gpt-5.3-codex",
+            sonnet_model="gpt-5.2-codex",
+            haiku_model="gpt-5-mini",
+        )
 
         app._claude_settings_save_worker(settings)
 

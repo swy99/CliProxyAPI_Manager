@@ -12,7 +12,7 @@ CLIProxyAPI 릴리스를 확인합니다.
 - 시작 시 및 6시간 간격으로 공식 CLIProxyAPI 릴리스 확인
 - 릴리스 자산의 SHA-256 검증, 업데이트 실패 시 자동 롤백
 - OAuth 만료 감지와 공급자별 재로그인 버튼
-- Claude Code 전역 서브에이전트 및 Haiku/백그라운드 모델 설정
+- Claude Code 전역 서브에이전트 및 Fable/Opus/Sonnet/Haiku 모델 설정
 - CLIProxyAPI 모델 목록 조회와 사용자 정의 모델 ID 직접 입력
 - Windows 로그인 시 자동 실행
 - 창을 닫아도 계속 동작하는 시스템 트레이 인터페이스
@@ -45,14 +45,22 @@ CLIProxyAPI 릴리스를 확인합니다.
 관리자 창의 **Claude Code 전역 모델 설정**에서 다음 값을 관리할 수 있습니다.
 
 - **전체 서브에이전트**: `CLAUDE_CODE_SUBAGENT_MODEL`
-- **Haiku / 백그라운드**: `ANTHROPIC_DEFAULT_HAIKU_MODEL`
+- **Fable 기본 모델**: `ANTHROPIC_DEFAULT_FABLE_MODEL`
+- **Opus 기본 모델**: `ANTHROPIC_DEFAULT_OPUS_MODEL`
+- **Sonnet 기본 모델**: `ANTHROPIC_DEFAULT_SONNET_MODEL`
+- **Haiku 기본 모델 / 백그라운드**: `ANTHROPIC_DEFAULT_HAIKU_MODEL`
 
 설정은 사용자 전역 파일인 `%USERPROFILE%\.claude\settings.json`에 저장됩니다.
+전체 서브에이전트를 `inherit`로 두면 Explore, Plan 등 각 에이전트가 선택한
+`fable`, `opus`, `sonnet`, `haiku` 계층이 네 기본 모델 설정을 통해 실제 모델 ID로
+해석됩니다. 전체 서브에이전트에 모델을 지정하면 모든 서브에이전트와 agent team,
+workflow agent에 동일한 모델을 강제합니다.
+
 `inherit` 또는 `default`를 선택하면 해당 환경 변수 키를 파일에서 제거해 Claude
 Code의 기본 모델 해석을 사용합니다. CLIProxyAPI의 `/v1/models` 응답에 표시되지
 않는 모델이나 별칭도 콤보박스에 직접 입력할 수 있습니다.
 
-관리자는 저장 직전에 현재 설정 파일을 다시 읽고 위 두 키만 병합합니다. 저장 중
+관리자는 저장 직전에 현재 설정 파일을 다시 읽고 위 다섯 키만 병합합니다. 저장 중
 다른 프로그램의 변경을 감지하면 최신 내용을 다시 읽어 병합을 재시도합니다. 다른
 환경 변수와 `permissions`, `hooks` 같은 설정은 보존하며, 기존 파일은
 `settings.json.cliproxy-manager.bak`으로 백업한 뒤 원자적으로 교체합니다. JSON이
