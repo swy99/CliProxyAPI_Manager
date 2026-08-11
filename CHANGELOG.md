@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0 - 2026-08-11
+
+- Added a verified PowerShell installer for CLIProxyAPI, Claude Code, and Manager.
+- Added an npm/npx wrapper for the Windows installer.
+- Added tag-based release automation for the Manager binary and checksums.
+
 ## 1.0.0 - 2026-07-31
 
 - Added a Windows tray interface for CLIProxyAPI status and authentication.

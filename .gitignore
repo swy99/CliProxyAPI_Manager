@@ -13,6 +13,11 @@ CLIProxyAPI-Manager.exe
 # Runtime files
 *.log
 
+# Node and npm
+node_modules/
+npm-debug.log*
+*.tgz
+
 # Editor and OS files
 .idea/
 .vscode/

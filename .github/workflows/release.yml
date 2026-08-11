@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Verify release versions
+        shell: pwsh
+        run: |
+          $tagVersion = $env:GITHUB_REF_NAME.TrimStart("v", "V")
+          $appMatch = Select-String -Path "cliproxy_manager.py" -Pattern '^APP_VERSION = "([^"]+)"$'
+          if (-not $appMatch) {
+            throw "cliproxy_manager.py에서 APP_VERSION을 찾을 수 없습니다."
+          }
+          $appVersion = $appMatch.Matches[0].Groups[1].Value
+          $packageVersion = (Get-Content -LiteralPath "package.json" -Raw | ConvertFrom-Json).version
+          if ($tagVersion -ne $appVersion -or $tagVersion -ne $packageVersion) {
+            throw "버전 불일치: tag=$tagVersion, app=$appVersion, npm=$packageVersion"
+          }
+
+      - name: Build Manager
+        shell: pwsh
+        run: .\build.ps1 -SkipStartupRegistration
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          & ".\.manager-venv\Scripts\python.exe" -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Create release assets
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -LiteralPath "CLIProxyAPI-Manager.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  CLIProxyAPI-Manager.exe" | Set-Content -LiteralPath "CLIProxyAPI-Manager.exe.sha256" -Encoding ascii
+
+          $packResult = npm pack --json | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $packageFile = $packResult[0].filename
+          "PACKAGE_FILE=$packageFile" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+
+      - name: Publish GitHub Release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(
+            "CLIProxyAPI-Manager.exe",
+            "CLIProxyAPI-Manager.exe.sha256",
+            "install.ps1",
+            $env:PACKAGE_FILE
+          )
+          gh release view $env:GITHUB_REF_NAME | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:GITHUB_REF_NAME @assets --clobber
+          }
+          else {
+            gh release create $env:GITHUB_REF_NAME @assets --verify-tag --generate-notes
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
