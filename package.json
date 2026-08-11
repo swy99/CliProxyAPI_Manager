@@ -1,0 +1,36 @@
+{
+  "name": "cliproxyapi-manager",
+  "version": "1.1.0",
+  "description": "One-line Windows installer for CLIProxyAPI, Claude Code, and CLIProxyAPI Manager",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/swy99/CliProxyAPI_Manager.git"
+  },
+  "homepage": "https://github.com/swy99/CliProxyAPI_Manager#readme",
+  "os": [
+    "win32"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "cliproxyapi-manager": "bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "install.ps1",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --check bin/cli.js",
+    "pack:check": "npm pack --dry-run"
+  },
+  "keywords": [
+    "cliproxyapi",
+    "claude-code",
+    "windows",
+    "installer"
+  ]
+}
