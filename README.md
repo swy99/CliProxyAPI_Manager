@@ -13,6 +13,7 @@ CLIProxyAPI 릴리스를 확인합니다.
 - 릴리스 자산의 SHA-256 검증, 업데이트 실패 시 자동 롤백
 - OAuth 만료 감지와 공급자별 재로그인 버튼
 - Claude Code 전역 서브에이전트 및 Haiku/백그라운드 모델 설정
+- 현재 CLIProxyAPI 연결을 Claude Code 전역 설정에 안전하게 적용
 - CLIProxyAPI 모델 목록 조회와 사용자 정의 모델 ID 직접 입력
 - Windows 로그인 시 자동 실행
 - 창을 닫아도 계속 동작하는 시스템 트레이 인터페이스
@@ -64,8 +65,9 @@ npx -y github:swy99/CliProxyAPI_Manager
 
 기존 프로필과 설정은 보존하며, 다시 실행해도 중복 없이 갱신합니다(멱등). cmd
 단축키는 현재 사용자 범위의 `AutoRun` 레지스트리 값을 통해 로드되며, 기존 값이
-있으면 덮어쓰지 않고 이어 붙입니다. 단축키는 새 터미널부터 적용됩니다. 이 단계는
-`ANTHROPIC_BASE_URL`이나 모델 배선을 바꾸지 않습니다.
+있으면 덮어쓰지 않고 이어 붙입니다. 단축키는 새 터미널부터 적용됩니다. 설치기의
+이 선택 단계 자체는 `ANTHROPIC_BASE_URL`이나 모델 배선을 바꾸지 않습니다. 연결을
+바꾸려면 설치 후 Manager의 **CLIProxyAPI 연결 적용** 버튼을 사용합니다.
 
 ### 설치 옵션
 
@@ -129,16 +131,32 @@ Remove-Item "$env:LOCALAPPDATA\CLIProxyAPI" -Recurse -Force
 Code의 기본 모델 해석을 사용합니다. CLIProxyAPI의 `/v1/models` 응답에 표시되지
 않는 모델이나 별칭도 콤보박스에 직접 입력할 수 있습니다.
 
-관리자는 저장 직전에 현재 설정 파일을 다시 읽고 위 두 키만 병합합니다. 저장 중
-다른 프로그램의 변경을 감지하면 최신 내용을 다시 읽어 병합을 재시도합니다. 다른
-환경 변수와 `permissions`, `hooks` 같은 설정은 보존하며, 기존 파일은
+**CLIProxyAPI 연결 적용**을 누르면 Manager가 최신 `config.yaml`을 다시 읽고 다음
+값을 같은 사용자 전역 파일에 저장합니다.
+
+- `ANTHROPIC_BASE_URL` — wildcard 호스트를 접속 가능한 localhost 주소로 정규화한 URL
+- `ANTHROPIC_AUTH_TOKEN` — `api-keys`의 첫 번째 유효 키. Claude Code에서
+  `Authorization: Bearer` 헤더로 전송됩니다.
+
+CLIProxyAPI가 Bearer 인증을 사용하므로 `ANTHROPIC_API_KEY`를 새로 만들거나 지우지
+않습니다. Claude Code의 인증 우선순위에서는 `ANTHROPIC_AUTH_TOKEN`이
+`ANTHROPIC_API_KEY`보다 우선합니다. 키 값은 Manager 화면과 로그에 표시하지 않습니다.
+
+관리자는 저장 직전에 현재 설정 파일을 다시 읽고 자신이 관리하는 키만 병합합니다.
+저장 중 다른 프로그램의 변경을 감지하면 최신 내용을 다시 읽어 병합을 재시도합니다.
+다른 환경 변수와 `permissions`, `hooks` 같은 설정은 보존하며, 기존 파일은
 `settings.json.cliproxy-manager.bak`으로 백업한 뒤 원자적으로 교체합니다. JSON이
 손상되었거나 `env` 형식이 잘못된 경우에는 원본을 덮어쓰지 않습니다.
 
-프로젝트 `.claude/settings.json`, 로컬 설정, 관리 정책 및 실행 옵션이 사용자 전역
-설정보다 우선할 수 있습니다. 저장 후 새 Claude Code 세션을 시작해 적용 상태를
-확인하는 것을 권장합니다. 이 기능은 CLIProxyAPI `config.yaml`이나 Claude Code의
-Auto mode 분류기 설정을 수정하지 않습니다.
+모델 목록 조회, 상태 감시, 재시작, 업데이트 및 로그인 작업도 실행 전에
+`config.yaml`을 다시 읽으므로 실행 중 API 키·포트·TLS 설정이 변경되어도 오래된
+연결 정보를 계속 사용하지 않습니다. 백엔드 자체가 설정을 다시 읽게 하려면 서버
+재시작이 필요할 수 있습니다.
+
+프로젝트 `.claude/settings.json`, 로컬 설정, 관리 정책, 프로세스 환경 변수 및 실행
+옵션이 사용자 전역 설정보다 우선할 수 있습니다. 저장 후 새 Claude Code 세션에서
+`/status`로 연결과 인증 소스를 확인하는 것을 권장합니다. 이 기능은 CLIProxyAPI
+`config.yaml`이나 Claude Code의 Auto mode 분류기 설정을 수정하지 않습니다.
 
 ## 인증 만료 처리
 
@@ -178,7 +196,7 @@ npm pack --dry-run
 
 ## 릴리스와 npm 게시
 
-`v1.1.0`처럼 `v*` 태그를 푸시하면 GitHub Actions가 버전 일치 여부를 확인하고
+`v1.2.1`처럼 `v*` 태그를 푸시하면 GitHub Actions가 버전 일치 여부를 확인하고
 다음 자산을 GitHub Release에 게시합니다.
 
 - `CLIProxyAPI-Manager.exe`

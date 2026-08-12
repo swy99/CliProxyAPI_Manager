@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1 - 2026-08-12
+
+- Reloads `config.yaml` before model discovery, health monitoring, restart, update, and login operations so rotated API keys and connection changes no longer leave the Manager sending stale credentials that can cause HTTP 401 responses.
+- Adds a Manager action that safely merges the current CLIProxyAPI base URL and Bearer token into Claude Code's user `settings.json` as `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`, while preserving unrelated settings and keeping credentials out of the UI and logs.
+
 ## 1.2.0 - 2026-08-12
 
 - Added an optional post-install step that offers to add Claude Code shell shortcuts and ensure auto-compaction is enabled.

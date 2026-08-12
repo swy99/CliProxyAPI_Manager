@@ -24,10 +24,12 @@ from PIL import Image, ImageDraw
 from manager_core import (
     AuthRecord,
     BackendUpdater,
+    ClaudeCodeConnectionSettings,
     ClaudeCodeModelSettings,
     ManagerConfig,
     ServerProcessManager,
     ServerStatus,
+    UpdateResult,
     claude_code_settings_path,
     fetch_cliproxy_model_ids,
     load_claude_code_model_settings,
@@ -35,6 +37,7 @@ from manager_core import (
     read_binary_version,
     read_startup_command,
     register_startup,
+    save_claude_code_connection_settings,
     save_claude_code_model_settings,
     scan_auth_records,
     startup_command,
@@ -43,7 +46,7 @@ from manager_core import (
 )
 
 APP_NAME = "CLIProxyAPI 관리자"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 STATUS_INTERVAL_SECONDS = 15
 UPDATE_INTERVAL_SECONDS = 6 * 60 * 60
 MAX_RESTART_BACKOFF_SECONDS = 5 * 60
@@ -153,7 +156,9 @@ class ManagerApp:
         start_minimized: bool,
     ):
         self.root = root
+        self.work_dir = config.work_dir
         self.config = config
+        self.config_lock = threading.Lock()
         self.processes = ServerProcessManager(config)
         self.logger = logging.getLogger("cliproxy-manager")
         self.events: queue.Queue[tuple[Any, ...]] = queue.Queue()
@@ -360,9 +365,15 @@ class ManagerApp:
             command=lambda: self.request_model_refresh(True),
         )
         self.refresh_models_button.pack(fill=tk.X)
+        self.apply_claude_connection_button = ttk.Button(
+            claude_buttons,
+            text="CLIProxyAPI 연결 적용",
+            command=self.request_claude_connection_apply,
+        )
+        self.apply_claude_connection_button.pack(fill=tk.X, pady=(6, 0))
         self.save_claude_settings_button = ttk.Button(
             claude_buttons,
-            text="전역 설정 저장",
+            text="전역 모델 설정 저장",
             command=self.request_claude_settings_save,
         )
         self.save_claude_settings_button.pack(fill=tk.X, pady=(6, 0))
@@ -536,6 +547,10 @@ class ManagerApp:
             self._finish_claude_settings_save(None)
         elif kind == "claude-settings-save-failed":
             self._finish_claude_settings_save(event[1])
+        elif kind == "claude-connection-applied":
+            self._finish_claude_connection_apply(None, event[1])
+        elif kind == "claude-connection-apply-failed":
+            self._finish_claude_connection_apply(event[1], None)
         elif kind == "ui-action":
             self._handle_ui_action(*event[1:])
 
@@ -553,6 +568,13 @@ class ManagerApp:
             self.toggle_autostart()
         elif action == "quit":
             self.quit_manager()
+
+    def _reload_runtime_config(self) -> ManagerConfig:
+        config = load_config(self.work_dir)
+        with self.config_lock:
+            self.processes.update_config(config)
+            self.config = config
+        return config
 
     def _render_snapshot(
         self,
@@ -614,6 +636,7 @@ class ManagerApp:
             # during that window, so the regular watchdog stays out of the way.
             if not self.update_event.is_set():
                 try:
+                    config = self._reload_runtime_config()
                     status = self.processes.inspect()
                     now = time.monotonic()
                     if not status.running and now >= self.next_restart_at:
@@ -667,7 +690,7 @@ class ManagerApp:
                         self.restart_backoff = STATUS_INTERVAL_SECONDS
                         self.next_restart_at = 0
 
-                    records = scan_auth_records(self.config.auth_dir)
+                    records = scan_auth_records(config.auth_dir)
                     # CLIProxyAPI normally refreshes short-lived access tokens.
                     # scan_auth_records gives that refresh a five-minute grace
                     # period before an account is reported as expired.
@@ -746,7 +769,8 @@ class ManagerApp:
 
     def _model_refresh_worker(self, manual: bool) -> None:
         try:
-            model_ids = fetch_cliproxy_model_ids(self.config)
+            config = self._reload_runtime_config()
+            model_ids = fetch_cliproxy_model_ids(config)
             self.events.put(("models-loaded", model_ids, manual))
         except Exception as exc:
             self.logger.warning("CLIProxyAPI model list refresh failed: %s", exc)
@@ -777,6 +801,13 @@ class ManagerApp:
             f"CLIProxyAPI에서 모델 {len(model_ids)}개를 불러왔습니다."
         )
 
+    def _set_claude_settings_write_state(self, busy: bool) -> None:
+        state = tk.DISABLED if busy else tk.NORMAL
+        self.subagent_model_combo.configure(state=state)
+        self.haiku_model_combo.configure(state=state)
+        self.apply_claude_connection_button.configure(state=state)
+        self.save_claude_settings_button.configure(state=state)
+
     def request_claude_settings_save(self) -> None:
         if self.claude_settings_save_event.is_set():
             self.claude_settings_status.set("Claude Code 설정을 이미 저장 중입니다.")
@@ -792,10 +823,8 @@ class ManagerApp:
             ),
         )
         self.claude_settings_save_event.set()
-        self.subagent_model_combo.configure(state=tk.DISABLED)
-        self.haiku_model_combo.configure(state=tk.DISABLED)
-        self.save_claude_settings_button.configure(state=tk.DISABLED)
-        self.claude_settings_status.set("Claude Code 전역 설정 저장 중…")
+        self._set_claude_settings_write_state(True)
+        self.claude_settings_status.set("Claude Code 전역 모델 설정 저장 중…")
         threading.Thread(
             target=self._claude_settings_save_worker,
             args=(settings,),
@@ -816,11 +845,9 @@ class ManagerApp:
 
     def _finish_claude_settings_save(self, error: str | None) -> None:
         self.claude_settings_save_event.clear()
-        self.subagent_model_combo.configure(state=tk.NORMAL)
-        self.haiku_model_combo.configure(state=tk.NORMAL)
-        self.save_claude_settings_button.configure(state=tk.NORMAL)
+        self._set_claude_settings_write_state(False)
         if error:
-            self.claude_settings_status.set(f"전역 설정 저장 실패: {error}")
+            self.claude_settings_status.set(f"전역 모델 설정 저장 실패: {error}")
             messagebox.showerror(
                 "Claude Code 설정 저장 실패",
                 f"{error}\n\n기존 settings.json은 변경되지 않았습니다.",
@@ -828,7 +855,7 @@ class ManagerApp:
             return
 
         self.claude_settings_status.set(
-            f"전역 설정을 저장했습니다: {self.claude_settings_path}"
+            f"전역 모델 설정을 저장했습니다: {self.claude_settings_path}"
         )
         messagebox.showinfo(
             "Claude Code 설정 저장 완료",
@@ -836,6 +863,60 @@ class ManagerApp:
                 "전역 모델 설정을 저장했습니다.\n\n"
                 "프로젝트·로컬·관리 설정이 이 값을 덮을 수 있습니다. "
                 "새 Claude Code 세션을 시작해 적용 상태를 확인하세요."
+            ),
+        )
+
+    def request_claude_connection_apply(self) -> None:
+        if self.claude_settings_save_event.is_set():
+            self.claude_settings_status.set("Claude Code 설정을 이미 저장 중입니다.")
+            return
+        self.claude_settings_save_event.set()
+        self._set_claude_settings_write_state(True)
+        self.claude_settings_status.set("CLIProxyAPI 연결을 Claude Code에 적용 중…")
+        threading.Thread(
+            target=self._claude_connection_apply_worker,
+            name="claude-connection-apply",
+            daemon=True,
+        ).start()
+
+    def _claude_connection_apply_worker(self) -> None:
+        try:
+            config = self._reload_runtime_config()
+            save_claude_code_connection_settings(
+                ClaudeCodeConnectionSettings(
+                    base_url=config.base_url,
+                    auth_token=config.api_key or "",
+                ),
+                self.claude_settings_path,
+            )
+            self.events.put(("claude-connection-applied", config.base_url))
+        except Exception as exc:
+            self.logger.warning("Claude Code connection apply failed: %s", exc)
+            self.events.put(("claude-connection-apply-failed", str(exc)))
+
+    def _finish_claude_connection_apply(
+        self,
+        error: str | None,
+        base_url: str | None,
+    ) -> None:
+        self.claude_settings_save_event.clear()
+        self._set_claude_settings_write_state(False)
+        if error:
+            self.claude_settings_status.set(f"CLIProxyAPI 연결 적용 실패: {error}")
+            messagebox.showerror(
+                "Claude Code 연결 적용 실패",
+                f"{error}\n\n기존 settings.json은 변경되지 않았습니다.",
+            )
+            return
+
+        self.claude_settings_status.set(
+            f"CLIProxyAPI 연결을 적용했습니다: {base_url}"
+        )
+        messagebox.showinfo(
+            "Claude Code 연결 적용 완료",
+            (
+                f"Claude Code 전역 연결을 {base_url}(으)로 설정했습니다.\n\n"
+                "새 Claude Code 세션에서 /status로 연결과 인증 소스를 확인하세요."
             ),
         )
 
@@ -857,17 +938,26 @@ class ManagerApp:
 
     def _update_worker(self) -> None:
         try:
+            config = self._reload_runtime_config()
             updater = BackendUpdater(
-                self.config,
+                config,
                 self.processes,
                 progress=lambda message: self.events.put(
                     ("update-progress", message)
                 ),
             )
             result = updater.run()
-            self.events.put(("update-done", result))
+        except Exception as exc:
+            self.logger.exception("Backend update setup failed")
+            result = UpdateResult(
+                "failed",
+                self.current_version,
+                None,
+                f"업데이트 확인 실패: {exc}",
+            )
         finally:
             self.update_event.clear()
+        self.events.put(("update-done", result))
 
     def request_restart(self) -> None:
         if self.update_event.is_set():
@@ -882,6 +972,7 @@ class ManagerApp:
 
     def _restart_worker(self) -> None:
         try:
+            self._reload_runtime_config()
             status = self.processes.restart()
         except Exception as exc:
             self.logger.exception("Manual restart failed")
@@ -907,6 +998,7 @@ class ManagerApp:
 
     def _login_worker(self, flag: str, label: str) -> None:
         try:
+            self._reload_runtime_config()
             process = self.processes.launch_login(flag)
             self.events.put(("login-started", label))
             return_code = process.wait()

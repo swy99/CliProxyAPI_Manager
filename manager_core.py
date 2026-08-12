@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 import uuid
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -36,6 +36,8 @@ VERSION_PATTERN = re.compile(r"CLIProxyAPI Version:\s*v?([^,\s]+)", re.IGNORECAS
 LOGIN_FLAG_PATTERN = re.compile(r"^\s+-(?P<flag>[\w-]+-login)\s*$", re.MULTILINE)
 CLAUDE_CODE_SUBAGENT_MODEL_KEY = "CLAUDE_CODE_SUBAGENT_MODEL"
 ANTHROPIC_DEFAULT_HAIKU_MODEL_KEY = "ANTHROPIC_DEFAULT_HAIKU_MODEL"
+ANTHROPIC_BASE_URL_KEY = "ANTHROPIC_BASE_URL"
+ANTHROPIC_AUTH_TOKEN_KEY = "ANTHROPIC_AUTH_TOKEN"
 CLAUDE_SETTINGS_BACKUP_SUFFIX = ".cliproxy-manager.bak"
 MAX_CLAUDE_SETTINGS_WRITE_ATTEMPTS = 3
 MAX_MODELS_RESPONSE_BYTES = 2_000_000
@@ -50,24 +52,34 @@ class ManagerConfig:
     auth_dir: Path
     host: str
     port: int
-    api_key: str | None
+    api_key: str | None = field(repr=False)
     tls_enabled: bool
 
     @property
-    def health_url(self) -> str:
+    def base_url(self) -> str:
         host = self.host.strip()
         if host in {"", "0.0.0.0", "::", "[::]"}:
             host = "127.0.0.1"
         if ":" in host and not host.startswith("["):
             host = f"[{host}]"
         scheme = "https" if self.tls_enabled else "http"
-        return f"{scheme}://{host}:{self.port}/v1/models"
+        return f"{scheme}://{host}:{self.port}"
+
+    @property
+    def health_url(self) -> str:
+        return f"{self.base_url}/v1/models"
 
 
 @dataclass(frozen=True)
 class ClaudeCodeModelSettings:
     subagent_model: str | None
     haiku_model: str | None
+
+
+@dataclass(frozen=True)
+class ClaudeCodeConnectionSettings:
+    base_url: str
+    auth_token: str = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -152,7 +164,12 @@ def load_config(work_dir: Path) -> ManagerConfig:
     api_key = None
     if isinstance(raw_keys, list):
         api_key = next(
-            (str(item) for item in raw_keys if isinstance(item, (str, int, float))),
+            (
+                normalized
+                for item in raw_keys
+                if isinstance(item, (str, int, float))
+                and (normalized := str(item).strip())
+            ),
             None,
         )
 
@@ -239,7 +256,7 @@ def load_claude_code_model_settings(
     )
 
 
-def _normalized_model_override(value: str | None) -> str | None:
+def _normalized_optional_value(value: str | None) -> str | None:
     if value is None:
         return None
     normalized = value.strip()
@@ -300,26 +317,20 @@ def _current_claude_settings_bytes(path: Path) -> bytes | None:
     return path.read_bytes()
 
 
-def save_claude_code_model_settings(
-    settings: ClaudeCodeModelSettings,
+def _save_claude_code_env_updates(
+    updates: dict[str, str | None],
     path: Path | None = None,
 ) -> None:
     settings_path = path or claude_code_settings_path()
-    subagent_model = _normalized_model_override(settings.subagent_model)
-    haiku_model = _normalized_model_override(settings.haiku_model)
 
     for _attempt in range(MAX_CLAUDE_SETTINGS_WRITE_ATTEMPTS):
         document, original_raw = _read_claude_settings_state(settings_path)
-        if original_raw is None and subagent_model is None and haiku_model is None:
+        if original_raw is None and all(value is None for value in updates.values()):
             return
         settings_path.parent.mkdir(parents=True, exist_ok=True)
 
         env_was_present = "env" in document
         env = dict(document.get("env") or {})
-        updates = {
-            CLAUDE_CODE_SUBAGENT_MODEL_KEY: subagent_model,
-            ANTHROPIC_DEFAULT_HAIKU_MODEL_KEY: haiku_model,
-        }
         for key, value in updates.items():
             if value is None:
                 env.pop(key, None)
@@ -354,6 +365,42 @@ def save_claude_code_model_settings(
 
     raise RuntimeError(
         "Claude Code settings.json이 다른 프로그램에서 계속 변경되어 저장하지 못했습니다."
+    )
+
+
+def save_claude_code_model_settings(
+    settings: ClaudeCodeModelSettings,
+    path: Path | None = None,
+) -> None:
+    _save_claude_code_env_updates(
+        {
+            CLAUDE_CODE_SUBAGENT_MODEL_KEY: _normalized_optional_value(
+                settings.subagent_model
+            ),
+            ANTHROPIC_DEFAULT_HAIKU_MODEL_KEY: _normalized_optional_value(
+                settings.haiku_model
+            ),
+        },
+        path,
+    )
+
+
+def save_claude_code_connection_settings(
+    settings: ClaudeCodeConnectionSettings,
+    path: Path | None = None,
+) -> None:
+    base_url = _normalized_optional_value(settings.base_url)
+    auth_token = _normalized_optional_value(settings.auth_token)
+    if base_url is None:
+        raise ValueError("CLIProxyAPI 연결 주소가 비어 있습니다.")
+    if auth_token is None:
+        raise ValueError("CLIProxyAPI API 키가 설정되어 있지 않습니다.")
+    _save_claude_code_env_updates(
+        {
+            ANTHROPIC_BASE_URL_KEY: base_url,
+            ANTHROPIC_AUTH_TOKEN_KEY: auth_token,
+        },
+        path,
     )
 
 
@@ -625,6 +672,12 @@ class ServerProcessManager:
         self.config = config
         self._target_path = _normalized_path(config.executable_path)
 
+    def update_config(self, config: ManagerConfig) -> None:
+        target_path = _normalized_path(config.executable_path)
+        if target_path != self._target_path:
+            raise ValueError("다른 CLIProxyAPI 설치 경로의 설정은 적용할 수 없습니다.")
+        self.config = config
+
     @staticmethod
     def _is_server_command(command_line: Iterable[str]) -> bool:
         flags = {str(arg).casefold() for arg in command_line}
@@ -670,13 +723,14 @@ class ServerProcessManager:
         ]
 
     def _probe_http(self, timeout: float = 3) -> tuple[bool, int | None, str | None]:
+        config = self.config
         request = urllib.request.Request(
-            self.config.health_url,
+            config.health_url,
             headers={"User-Agent": "CLIProxyAPI-Manager/1.0"},
         )
-        if self.config.api_key:
-            request.add_header("Authorization", f"Bearer {self.config.api_key}")
-        context = ssl._create_unverified_context() if self.config.tls_enabled else None
+        if config.api_key:
+            request.add_header("Authorization", f"Bearer {config.api_key}")
+        context = ssl._create_unverified_context() if config.tls_enabled else None
         try:
             with urllib.request.urlopen(
                 request, timeout=timeout, context=context
@@ -702,12 +756,13 @@ class ServerProcessManager:
         )
 
     def start(self) -> int:
+        config = self.config
         running = self.server_processes()
         if running:
             return running[0].pid
 
-        stdout_path = self.config.work_dir / "cli-proxy-api.log"
-        stderr_path = self.config.work_dir / "cli-proxy-api.error.log"
+        stdout_path = config.work_dir / "cli-proxy-api.log"
+        stderr_path = config.work_dir / "cli-proxy-api.error.log"
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
             subprocess, "CREATE_NEW_PROCESS_GROUP", 0
         )
@@ -716,11 +771,11 @@ class ServerProcessManager:
         ) as stderr_handle:
             process = subprocess.Popen(
                 [
-                    str(self.config.executable_path),
+                    str(config.executable_path),
                     "-config",
-                    str(self.config.config_path),
+                    str(config.config_path),
                 ],
-                cwd=str(self.config.work_dir),
+                cwd=str(config.work_dir),
                 stdin=subprocess.DEVNULL,
                 stdout=stdout_handle,
                 stderr=stderr_handle,
@@ -761,17 +816,18 @@ class ServerProcessManager:
         return self.wait_healthy()
 
     def launch_login(self, flag: str) -> subprocess.Popen[bytes]:
-        if flag not in supported_login_flags(self.config.executable_path):
+        config = self.config
+        if flag not in supported_login_flags(config.executable_path):
             raise ValueError(f"현재 바이너리가 지원하지 않는 로그인 옵션입니다: {flag}")
         creation_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         return subprocess.Popen(
             [
-                str(self.config.executable_path),
+                str(config.executable_path),
                 f"-{flag}",
                 "-config",
-                str(self.config.config_path),
+                str(config.config_path),
             ],
-            cwd=str(self.config.work_dir),
+            cwd=str(config.work_dir),
             creationflags=creation_flags,
         )
 
