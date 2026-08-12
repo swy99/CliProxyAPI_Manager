@@ -17,7 +17,7 @@ from cliproxy_manager import (
     model_choice_values,
     model_override_from_display,
 )
-from manager_core import ClaudeCodeModelSettings
+from manager_core import ClaudeCodeConnectionSettings, ClaudeCodeModelSettings
 
 
 class FakeVariable:
@@ -90,6 +90,7 @@ class ModelSelectionTests(unittest.TestCase):
         app.claude_settings_save_event = threading.Event()
         app.subagent_model_combo = FakeWidget()
         app.haiku_model_combo = FakeWidget()
+        app.apply_claude_connection_button = FakeWidget()
         app.save_claude_settings_button = FakeWidget()
         app.claude_settings_path = Path("C:/Users/example/.claude/settings.json")
 
@@ -97,6 +98,7 @@ class ModelSelectionTests(unittest.TestCase):
 
         self.assertEqual(app.subagent_model_combo.state, "disabled")
         self.assertEqual(app.haiku_model_combo.state, "disabled")
+        self.assertEqual(app.apply_claude_connection_button.state, "disabled")
         self.assertEqual(app.save_claude_settings_button.state, "disabled")
         mock_thread.return_value.start.assert_called_once_with()
 
@@ -104,6 +106,7 @@ class ModelSelectionTests(unittest.TestCase):
             app._finish_claude_settings_save(None)
         self.assertEqual(app.subagent_model_combo.state, "normal")
         self.assertEqual(app.haiku_model_combo.state, "normal")
+        self.assertEqual(app.apply_claude_connection_button.state, "normal")
         self.assertEqual(app.save_claude_settings_button.state, "normal")
         self.assertFalse(app.claude_settings_save_event.is_set())
 
@@ -112,15 +115,18 @@ class ModelSelectionTests(unittest.TestCase):
         return_value=("gpt-5.4", "gpt-5-mini"),
     )
     def test_model_refresh_worker_posts_success_event(
-        self, _mock_fetch: mock.Mock
+        self, mock_fetch: mock.Mock
     ) -> None:
         app = ManagerApp.__new__(ManagerApp)
-        app.config = object()
+        current_config = object()
+        app._reload_runtime_config = mock.Mock(return_value=current_config)
         app.events = queue.Queue()
         app.logger = mock.Mock()
 
         app._model_refresh_worker(True)
 
+        app._reload_runtime_config.assert_called_once_with()
+        mock_fetch.assert_called_once_with(current_config)
         self.assertEqual(
             app.events.get_nowait(),
             ("models-loaded", ("gpt-5.4", "gpt-5-mini"), True),
@@ -134,7 +140,7 @@ class ModelSelectionTests(unittest.TestCase):
         self, _mock_fetch: mock.Mock
     ) -> None:
         app = ManagerApp.__new__(ManagerApp)
-        app.config = object()
+        app._reload_runtime_config = mock.Mock(return_value=object())
         app.events = queue.Queue()
         app.logger = mock.Mock()
 
@@ -159,6 +165,80 @@ class ModelSelectionTests(unittest.TestCase):
 
         mock_save.assert_called_once_with(settings, app.claude_settings_path)
         self.assertEqual(app.events.get_nowait(), ("claude-settings-saved",))
+
+    @mock.patch("cliproxy_manager.threading.Thread")
+    def test_connection_apply_uses_shared_settings_write_guard(
+        self, mock_thread: mock.Mock
+    ) -> None:
+        app = ManagerApp.__new__(ManagerApp)
+        app.claude_settings_status = FakeVariable()
+        app.claude_settings_save_event = threading.Event()
+        app.subagent_model_combo = FakeWidget()
+        app.haiku_model_combo = FakeWidget()
+        app.apply_claude_connection_button = FakeWidget()
+        app.save_claude_settings_button = FakeWidget()
+
+        app.request_claude_connection_apply()
+
+        self.assertTrue(app.claude_settings_save_event.is_set())
+        self.assertEqual(app.apply_claude_connection_button.state, "disabled")
+        self.assertEqual(app.save_claude_settings_button.state, "disabled")
+        mock_thread.return_value.start.assert_called_once_with()
+
+        with mock.patch("cliproxy_manager.messagebox.showinfo"):
+            app._finish_claude_connection_apply(None, "http://127.0.0.1:8317")
+        self.assertFalse(app.claude_settings_save_event.is_set())
+        self.assertEqual(app.apply_claude_connection_button.state, "normal")
+        self.assertEqual(app.save_claude_settings_button.state, "normal")
+
+    @mock.patch("cliproxy_manager.save_claude_code_connection_settings")
+    def test_connection_apply_worker_uses_latest_config_without_exposing_key(
+        self, mock_save: mock.Mock
+    ) -> None:
+        app = ManagerApp.__new__(ManagerApp)
+        config = mock.Mock()
+        config.base_url = "http://127.0.0.1:8317"
+        config.api_key = "current-proxy-key"
+        app._reload_runtime_config = mock.Mock(return_value=config)
+        app.claude_settings_path = Path("C:/Users/example/.claude/settings.json")
+        app.events = queue.Queue()
+        app.logger = mock.Mock()
+
+        app._claude_connection_apply_worker()
+
+        settings = mock_save.call_args.args[0]
+        self.assertEqual(
+            settings,
+            ClaudeCodeConnectionSettings(
+                "http://127.0.0.1:8317", "current-proxy-key"
+            ),
+        )
+        self.assertNotIn("current-proxy-key", repr(settings))
+        mock_save.assert_called_once_with(settings, app.claude_settings_path)
+        event = app.events.get_nowait()
+        self.assertEqual(
+            event,
+            ("claude-connection-applied", "http://127.0.0.1:8317"),
+        )
+        self.assertNotIn("current-proxy-key", repr(event))
+
+    @mock.patch("cliproxy_manager.load_config")
+    def test_reload_runtime_config_updates_both_consumers(
+        self, mock_load: mock.Mock
+    ) -> None:
+        app = ManagerApp.__new__(ManagerApp)
+        app.work_dir = Path("C:/cliproxy")
+        app.config_lock = threading.Lock()
+        app.config = object()
+        app.processes = mock.Mock()
+        current_config = object()
+        mock_load.return_value = current_config
+
+        self.assertIs(app._reload_runtime_config(), current_config)
+
+        mock_load.assert_called_once_with(app.work_dir)
+        app.processes.update_config.assert_called_once_with(current_config)
+        self.assertIs(app.config, current_config)
 
 
 class BackendDirectoryTests(unittest.TestCase):

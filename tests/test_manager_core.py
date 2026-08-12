@@ -11,6 +11,7 @@ import zipfile
 
 from manager_core import (
     BackendUpdater,
+    ClaudeCodeConnectionSettings,
     ClaudeCodeModelSettings,
     GitHubReleaseClient,
     ManagerConfig,
@@ -26,6 +27,7 @@ from manager_core import (
     load_config,
     parse_datetime,
     parse_version_output,
+    save_claude_code_connection_settings,
     save_claude_code_model_settings,
     scan_auth_records,
     select_windows_asset,
@@ -59,7 +61,49 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(config.auth_dir, (root / "credentials").resolve())
             self.assertEqual(config.api_key, "test-key")
+            self.assertEqual(config.base_url, "https://127.0.0.1:9123")
             self.assertEqual(config.health_url, "https://127.0.0.1:9123/v1/models")
+
+    def test_uses_first_non_empty_trimmed_api_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            (root / "cli-proxy-api.exe").write_bytes(b"binary")
+            (root / "config.yaml").write_text(
+                'api-keys:\n  - "   "\n  - " current-key "\n',
+                encoding="utf-8",
+            )
+
+            config = load_config(root)
+
+            self.assertEqual(config.api_key, "current-key")
+            self.assertNotIn("current-key", repr(config))
+
+    def test_empty_api_keys_are_unset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            (root / "cli-proxy-api.exe").write_bytes(b"binary")
+            (root / "config.yaml").write_text(
+                'api-keys:\n  - " "\n',
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(load_config(root).api_key)
+
+    def test_base_url_formats_ipv6(self) -> None:
+        root = Path("C:/cliproxy")
+        config = ManagerConfig(
+            work_dir=root,
+            config_path=root / "config.yaml",
+            executable_path=root / "cli-proxy-api.exe",
+            auth_dir=root / "auth",
+            host="::1",
+            port=8317,
+            api_key=None,
+            tls_enabled=False,
+        )
+
+        self.assertEqual(config.base_url, "http://[::1]:8317")
+        self.assertEqual(config.health_url, "http://[::1]:8317/v1/models")
 
     def test_rejects_invalid_port(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
@@ -136,6 +180,66 @@ class ClaudeCodeSettingsTests(unittest.TestCase):
             )
             backup = claude_code_settings_backup_path(path)
             self.assertEqual(json.loads(backup.read_text(encoding="utf-8")), original)
+
+    def test_saves_connection_without_replacing_unrelated_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / ".claude" / "settings.json"
+            path.parent.mkdir()
+            original = {
+                "$schema": "https://json.schemastore.org/claude-code-settings.json",
+                "permissions": {"allow": ["Read"]},
+                "hooks": {"Stop": []},
+                "env": {
+                    "EXISTING_VALUE": "keep-me",
+                    "ANTHROPIC_API_KEY": "preserve-existing-key",
+                    "CLAUDE_CODE_SUBAGENT_MODEL": "custom-model",
+                },
+            }
+            path.write_text(json.dumps(original), encoding="utf-8")
+
+            settings = ClaudeCodeConnectionSettings(
+                " http://127.0.0.1:8317 ",
+                " current-proxy-key ",
+            )
+            save_claude_code_connection_settings(settings, path)
+
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["$schema"], original["$schema"])
+            self.assertEqual(saved["permissions"], original["permissions"])
+            self.assertEqual(saved["hooks"], original["hooks"])
+            self.assertEqual(saved["env"]["EXISTING_VALUE"], "keep-me")
+            self.assertEqual(
+                saved["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "custom-model"
+            )
+            self.assertEqual(
+                saved["env"]["ANTHROPIC_API_KEY"], "preserve-existing-key"
+            )
+            self.assertEqual(
+                saved["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:8317"
+            )
+            self.assertEqual(
+                saved["env"]["ANTHROPIC_AUTH_TOKEN"], "current-proxy-key"
+            )
+            self.assertNotIn("current-proxy-key", repr(settings))
+            backup = claude_code_settings_backup_path(path)
+            self.assertEqual(json.loads(backup.read_text(encoding="utf-8")), original)
+
+    def test_connection_requires_url_and_api_key_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "settings.json"
+            path.write_text('{"env": {"EXISTING_VALUE": "keep"}}', encoding="utf-8")
+            before = path.read_bytes()
+
+            cases = (
+                (ClaudeCodeConnectionSettings(" ", "token"), "연결 주소"),
+                (ClaudeCodeConnectionSettings("http://127.0.0.1:8317", " "), "API 키"),
+            )
+            for settings, message in cases:
+                with self.subTest(message=message):
+                    with self.assertRaisesRegex(ValueError, message):
+                        save_claude_code_connection_settings(settings, path)
+                    self.assertEqual(path.read_bytes(), before)
+                    self.assertFalse(claude_code_settings_backup_path(path).exists())
 
     def test_unset_models_remove_only_managed_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
@@ -486,6 +590,20 @@ class VersionAndReleaseTests(unittest.TestCase):
 
 
 class ProcessClassificationTests(unittest.TestCase):
+    @staticmethod
+    def _config(*, port: int, api_key: str) -> ManagerConfig:
+        root = Path("C:/cliproxy")
+        return ManagerConfig(
+            work_dir=root,
+            config_path=root / "config.yaml",
+            executable_path=root / "cli-proxy-api.exe",
+            auth_dir=root / "auth",
+            host="127.0.0.1",
+            port=port,
+            api_key=api_key,
+            tls_enabled=False,
+        )
+
     def test_login_commands_are_not_server_commands(self) -> None:
         self.assertTrue(
             ServerProcessManager._is_server_command(
@@ -497,6 +615,41 @@ class ProcessClassificationTests(unittest.TestCase):
                 ["cli-proxy-api.exe", "-codex-login", "-config", "config.yaml"]
             )
         )
+
+    @mock.patch("manager_core.urllib.request.urlopen")
+    def test_probe_uses_updated_url_and_api_key(
+        self, mock_urlopen: mock.Mock
+    ) -> None:
+        mock_urlopen.return_value = FakeHttpResponse(b"{}")
+        processes = ServerProcessManager(self._config(port=8317, api_key="old-key"))
+        processes.update_config(self._config(port=9123, api_key="new-key"))
+
+        healthy, status, error = processes._probe_http()
+
+        self.assertTrue(healthy)
+        self.assertEqual(status, 200)
+        self.assertIsNone(error)
+        request = mock_urlopen.call_args.args[0]
+        headers = {key.casefold(): value for key, value in request.header_items()}
+        self.assertEqual(request.full_url, "http://127.0.0.1:9123/v1/models")
+        self.assertEqual(headers["authorization"], "Bearer new-key")
+
+    def test_rejects_config_for_different_executable(self) -> None:
+        processes = ServerProcessManager(self._config(port=8317, api_key="key"))
+        other = self._config(port=9123, api_key="new-key")
+        other = ManagerConfig(
+            work_dir=Path("D:/other"),
+            config_path=Path("D:/other/config.yaml"),
+            executable_path=Path("D:/other/cli-proxy-api.exe"),
+            auth_dir=other.auth_dir,
+            host=other.host,
+            port=other.port,
+            api_key=other.api_key,
+            tls_enabled=other.tls_enabled,
+        )
+
+        with self.assertRaisesRegex(ValueError, "다른 CLIProxyAPI"):
+            processes.update_config(other)
 
 
 class FakeProcesses:
