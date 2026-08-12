@@ -196,6 +196,18 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("shellcheck install.sh linux/cliproxyapi-manager.sh", workflow)
         self.assertIn("bash tests/linux_integration.sh", workflow)
 
+    def test_npm_publish_workflow_uses_trusted_publishing(self) -> None:
+        workflow = (
+            PROJECT_ROOT / ".github" / "workflows" / "npm-publish.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('      - "npm-v*"', workflow)
+        self.assertIn("id-token: write", workflow)
+        self.assertIn('registry-url: "https://registry.npmjs.org"', workflow)
+        self.assertIn("npm install --global npm@latest", workflow)
+        self.assertIn("npm publish --access public", workflow)
+        self.assertNotIn("NODE_AUTH_TOKEN", workflow)
+
     def test_powershell_installer_parses(self) -> None:
         powershell = shutil.which("powershell.exe")
         if powershell is None:

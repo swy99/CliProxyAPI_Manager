@@ -1,0 +1,55 @@
+name: Publish npm package
+
+on:
+  push:
+    tags:
+      - "npm-v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Set up a trusted-publishing npm client
+        shell: bash
+        run: |
+          npm install --global npm@latest
+          node --version
+          npm --version
+
+      - name: Verify npm deployment version
+        shell: bash
+        run: |
+          package_version="$(node -p 'require("./package.json").version')"
+          tag_version="${GITHUB_REF_NAME#npm-v}"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            printf 'Tag/package version mismatch: tag=%s package=%s\n' \
+              "$tag_version" "$package_version" >&2
+            exit 1
+          fi
+
+      - name: Publish package through npm OIDC
+        shell: bash
+        run: |
+          package_name="$(node -p 'require("./package.json").name')"
+          package_version="$(node -p 'require("./package.json").version')"
+          if npm view "$package_name@$package_version" version >/dev/null 2>&1; then
+            printf '%s@%s is already published; skipping.\n' \
+              "$package_name" "$package_version"
+            exit 0
+          fi
+          npm publish --access public
