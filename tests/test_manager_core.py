@@ -21,6 +21,7 @@ from manager_core import (
     ServerStatus,
     claude_code_settings_backup_path,
     claude_code_settings_path,
+    disable_auth_file,
     fetch_cliproxy_model_ids,
     is_newer_version,
     load_claude_code_model_settings,
@@ -570,6 +571,94 @@ class AuthTests(unittest.TestCase):
             parse_datetime("2026-07-31T12:00:00Z"),
             dt.datetime(2026, 7, 31, 12, 0, tzinfo=dt.timezone.utc),
         )
+
+
+class DisableAuthFileTests(unittest.TestCase):
+    def _write_token(self, auth_dir: Path, name: str) -> Path:
+        payload = {
+            "type": name,
+            "email": f"{name}@example.test",
+            "access_token": "sensitive-test-value",
+        }
+        path = auth_dir / f"{name}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_moves_token_to_sibling_disabled_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            auth_dir = Path(temp_name) / "auth"
+            auth_dir.mkdir()
+            source = self._write_token(auth_dir, "claude")
+            original = source.read_text(encoding="utf-8")
+
+            destination = disable_auth_file(auth_dir, source)
+
+            self.assertFalse(source.exists())
+            self.assertEqual(
+                destination.parent, Path(temp_name).resolve() / "auth-disabled"
+            )
+            self.assertEqual(destination.name, "claude.json")
+            self.assertEqual(
+                destination.read_text(encoding="utf-8"), original
+            )
+
+    def test_collision_gets_timestamp_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            auth_dir = Path(temp_name) / "auth"
+            auth_dir.mkdir()
+            disabled_dir = Path(temp_name) / "auth-disabled"
+            disabled_dir.mkdir()
+            (disabled_dir / "claude.json").write_text(
+                "existing", encoding="utf-8"
+            )
+            source = self._write_token(auth_dir, "claude")
+
+            destination = disable_auth_file(auth_dir, source)
+
+            self.assertFalse(source.exists())
+            self.assertNotEqual(destination.name, "claude.json")
+            self.assertTrue(destination.name.startswith("claude."))
+            self.assertTrue(destination.name.endswith(".json"))
+            self.assertEqual(
+                (disabled_dir / "claude.json").read_text(encoding="utf-8"),
+                "existing",
+            )
+
+    def test_missing_source_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            auth_dir = Path(temp_name) / "auth"
+            auth_dir.mkdir()
+
+            with self.assertRaisesRegex(
+                FileNotFoundError, "인증 파일을 찾을 수 없습니다"
+            ):
+                disable_auth_file(auth_dir, auth_dir / "missing.json")
+
+    def test_rejects_path_outside_auth_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            auth_dir = Path(temp_name) / "auth"
+            auth_dir.mkdir()
+            outside = Path(temp_name) / "outside.json"
+            outside.write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ValueError, "인증 폴더 밖의 파일"
+            ):
+                disable_auth_file(auth_dir, outside)
+            self.assertTrue(outside.exists())
+
+    def test_rejects_non_json_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            auth_dir = Path(temp_name) / "auth"
+            auth_dir.mkdir()
+            other = auth_dir / "note.txt"
+            other.write_text("plain", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ValueError, "JSON 파일이 아닙니다"
+            ):
+                disable_auth_file(auth_dir, other)
+            self.assertTrue(other.exists())
 
 
 class VersionAndReleaseTests(unittest.TestCase):

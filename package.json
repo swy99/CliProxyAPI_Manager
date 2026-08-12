@@ -1,6 +1,6 @@
 {
   "name": "cliproxyapi-manager",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "One-line Windows and Linux installer for CLIProxyAPI, Claude Code, and CLIProxyAPI Manager",
   "license": "MIT",
   "repository": {

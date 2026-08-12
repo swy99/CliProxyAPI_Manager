@@ -31,6 +31,7 @@ from manager_core import (
     ServerStatus,
     UpdateResult,
     claude_code_settings_path,
+    disable_auth_file,
     fetch_cliproxy_model_ids,
     load_claude_code_model_settings,
     load_config,
@@ -46,7 +47,7 @@ from manager_core import (
 )
 
 APP_NAME = "CLIProxyAPI 관리자"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 STATUS_INTERVAL_SECONDS = 15
 UPDATE_INTERVAL_SECONDS = 6 * 60 * 60
 MAX_RESTART_BACKOFF_SECONDS = 5 * 60
@@ -174,6 +175,7 @@ class ManagerApp:
         self.unhealthy_count = 0
         self.notified_expiries: set[str] = set()
         self.auth_records: list[AuthRecord] = []
+        self.auth_items: dict[str, AuthRecord] = {}
         self.server_status = ServerStatus(False, False, ())
         self.expiry_dialog: tk.Toplevel | None = None
         self.start_minimized = start_minimized
@@ -414,9 +416,11 @@ class ManagerApp:
 
         auth_box = ttk.LabelFrame(outer, text="인증 토큰", padding=(10, 8))
         auth_box.pack(fill=tk.BOTH, expand=True)
+        tree_wrap = ttk.Frame(auth_box)
+        tree_wrap.pack(fill=tk.BOTH, expand=True)
         columns = ("provider", "account", "expiry", "status")
         self.auth_tree = ttk.Treeview(
-            auth_box,
+            tree_wrap,
             columns=columns,
             show="headings",
             selectmode="browse",
@@ -431,7 +435,7 @@ class ManagerApp:
         self.auth_tree.column("expiry", width=150, anchor=tk.CENTER)
         self.auth_tree.column("status", width=90, anchor=tk.CENTER, stretch=False)
         scrollbar = ttk.Scrollbar(
-            auth_box, orient=tk.VERTICAL, command=self.auth_tree.yview
+            tree_wrap, orient=tk.VERTICAL, command=self.auth_tree.yview
         )
         self.auth_tree.configure(yscrollcommand=scrollbar.set)
         self.auth_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -441,6 +445,22 @@ class ManagerApp:
         self.auth_tree.tag_configure("expiring", foreground="#b26a00")
         self.auth_tree.tag_configure("refreshing", foreground="#b26a00")
         self.auth_tree.tag_configure("disabled", foreground="#7a7a7a")
+        self.auth_tree.bind("<<TreeviewSelect>>", self._on_auth_selection)
+
+        auth_actions = ttk.Frame(auth_box)
+        auth_actions.pack(fill=tk.X, pady=(8, 0))
+        self.auth_disable_button = ttk.Button(
+            auth_actions,
+            text="선택 토큰 사용 중지(보관)",
+            command=self.request_auth_disable,
+            state=tk.DISABLED,
+        )
+        self.auth_disable_button.pack(side=tk.LEFT)
+        ttk.Label(
+            auth_actions,
+            text="토큰 파일을 auth-disabled 폴더로 옮깁니다.",
+            style="Subtle.TLabel",
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
         footer = ttk.Frame(outer)
         footer.pack(fill=tk.X, pady=(10, 0))
@@ -543,6 +563,14 @@ class ManagerApp:
                 self._notify(
                     "CLIProxyAPI 시작 실패", status.error or "서버 응답이 없습니다."
                 )
+        elif kind == "auth-disable-done":
+            _, record, records = event
+            self._render_auth_records(records)
+            self._notify(
+                "인증 토큰 사용 중지",
+                f"{record.provider} — {record.account} 토큰을 "
+                "auth-disabled 폴더로 옮겼습니다.",
+            )
         elif kind == "login-started":
             self.update_text.set(f"인증: {event[1]} 로그인 창을 열었습니다.")
         elif kind == "login-done":
@@ -600,7 +628,6 @@ class ManagerApp:
         version: str | None,
     ) -> None:
         self.server_status = status
-        self.auth_records = records
         if status.running and status.healthy:
             self.status_dot.configure(fg="#2f9e62")
             self.server_text.set("실행 중")
@@ -627,6 +654,11 @@ class ManagerApp:
             self.model_refresh_attempted = True
             self.request_model_refresh(False)
 
+        self._render_auth_records(records)
+
+    def _render_auth_records(self, records: list[AuthRecord]) -> None:
+        self.auth_records = records
+        self.auth_items = {}
         for item_id in self.auth_tree.get_children():
             self.auth_tree.delete(item_id)
         for record in records:
@@ -635,7 +667,7 @@ class ManagerApp:
                 if record.expires_at
                 else "-"
             )
-            self.auth_tree.insert(
+            item_id = self.auth_tree.insert(
                 "",
                 tk.END,
                 values=(
@@ -646,6 +678,14 @@ class ManagerApp:
                 ),
                 tags=(record.status,),
             )
+            self.auth_items[item_id] = record
+        # Rebuilding the tree clears the selection, so the action button
+        # goes back to its no-selection state.
+        self.auth_disable_button.configure(state=tk.DISABLED)
+
+    def _on_auth_selection(self, _event: object = None) -> None:
+        state = tk.NORMAL if self.auth_tree.selection() else tk.DISABLED
+        self.auth_disable_button.configure(state=state)
 
     def _monitor_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -1036,6 +1076,43 @@ class ManagerApp:
         if self.expiry_dialog and self.expiry_dialog.winfo_exists():
             self.expiry_dialog.destroy()
             self.expiry_dialog = None
+
+    def request_auth_disable(self) -> None:
+        selection = self.auth_tree.selection()
+        if not selection:
+            return
+        record = self.auth_items.get(selection[0])
+        if record is None:
+            return
+        if not messagebox.askyesno(
+            APP_NAME,
+            f"{record.provider} — {record.account} 토큰을 사용 중지할까요?\n"
+            "파일이 auth-disabled 폴더로 이동하며 서버가 더 이상 사용하지 않습니다.",
+        ):
+            return
+        self.auth_disable_button.configure(state=tk.DISABLED)
+        threading.Thread(
+            target=self._auth_disable_worker,
+            args=(record,),
+            name="auth-disable",
+            daemon=True,
+        ).start()
+
+    def _auth_disable_worker(self, record: AuthRecord) -> None:
+        try:
+            config = self._reload_runtime_config()
+            disable_auth_file(config.auth_dir, record.path)
+            records = scan_auth_records(config.auth_dir)
+            self.events.put(("auth-disable-done", record, records))
+        except Exception as exc:
+            self.logger.exception("Auth disable failed")
+            self.events.put(
+                (
+                    "notify",
+                    "토큰 사용 중지 실패",
+                    f"{record.provider} — {record.account}: {exc}",
+                )
+            )
 
     def _login_worker(self, flag: str, label: str) -> None:
         try:

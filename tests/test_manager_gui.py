@@ -17,7 +17,22 @@ from cliproxy_manager import (
     model_choice_values,
     model_override_from_display,
 )
-from manager_core import ClaudeCodeConnectionSettings, ClaudeCodeModelSettings
+from manager_core import (
+    AuthRecord,
+    ClaudeCodeConnectionSettings,
+    ClaudeCodeModelSettings,
+)
+
+
+def _record(name: str = "claude") -> AuthRecord:
+    return AuthRecord(
+        path=Path(f"C:/cliproxy/auth/{name}.json"),
+        provider=name,
+        account=f"{name}@example.test",
+        expires_at=None,
+        disabled=False,
+        status="unknown",
+    )
 
 
 class FakeVariable:
@@ -268,6 +283,101 @@ class ModelSelectionTests(unittest.TestCase):
         mock_load.assert_called_once_with(app.work_dir)
         app.processes.update_config.assert_called_once_with(current_config)
         self.assertIs(app.config, current_config)
+
+
+class AuthDisableTests(unittest.TestCase):
+    @mock.patch("cliproxy_manager.messagebox.askyesno", return_value=True)
+    @mock.patch("cliproxy_manager.threading.Thread")
+    def test_request_starts_worker_after_confirmation(
+        self, mock_thread: mock.Mock, mock_ask: mock.Mock
+    ) -> None:
+        app = ManagerApp.__new__(ManagerApp)
+        record = _record()
+        app.auth_tree = mock.Mock()
+        app.auth_tree.selection.return_value = ("item-1",)
+        app.auth_items = {"item-1": record}
+        app.auth_disable_button = FakeWidget()
+
+        app.request_auth_disable()
+
+        self.assertIn(record.account, mock_ask.call_args.args[1])
+        self.assertEqual(mock_thread.call_args.kwargs["args"], (record,))
+        self.assertEqual(app.auth_disable_button.state, "disabled")
+        mock_thread.return_value.start.assert_called_once_with()
+
+    @mock.patch("cliproxy_manager.messagebox.askyesno", return_value=False)
+    @mock.patch("cliproxy_manager.threading.Thread")
+    def test_request_cancel_keeps_token(
+        self, mock_thread: mock.Mock, _mock_ask: mock.Mock
+    ) -> None:
+        app = ManagerApp.__new__(ManagerApp)
+        app.auth_tree = mock.Mock()
+        app.auth_tree.selection.return_value = ("item-1",)
+        app.auth_items = {"item-1": _record()}
+        app.auth_disable_button = FakeWidget()
+
+        app.request_auth_disable()
+
+        mock_thread.assert_not_called()
+
+    @mock.patch("cliproxy_manager.threading.Thread")
+    def test_request_without_selection_does_nothing(
+        self, mock_thread: mock.Mock
+    ) -> None:
+        app = ManagerApp.__new__(ManagerApp)
+        app.auth_tree = mock.Mock()
+        app.auth_tree.selection.return_value = ()
+        app.auth_items = {}
+
+        app.request_auth_disable()
+
+        mock_thread.assert_not_called()
+
+    @mock.patch("cliproxy_manager.scan_auth_records")
+    @mock.patch("cliproxy_manager.disable_auth_file")
+    def test_worker_posts_success_event_with_rescan(
+        self, mock_disable: mock.Mock, mock_scan: mock.Mock
+    ) -> None:
+        app = ManagerApp.__new__(ManagerApp)
+        config = mock.Mock()
+        config.auth_dir = Path("C:/cliproxy/auth")
+        app._reload_runtime_config = mock.Mock(return_value=config)
+        app.events = queue.Queue()
+        app.logger = mock.Mock()
+        record = _record()
+        remaining = [_record("codex")]
+        mock_scan.return_value = remaining
+
+        app._auth_disable_worker(record)
+
+        mock_disable.assert_called_once_with(config.auth_dir, record.path)
+        mock_scan.assert_called_once_with(config.auth_dir)
+        self.assertEqual(
+            app.events.get_nowait(),
+            ("auth-disable-done", record, remaining),
+        )
+
+    @mock.patch(
+        "cliproxy_manager.disable_auth_file",
+        side_effect=ValueError("이동 실패"),
+    )
+    def test_worker_posts_failure_notification(
+        self, _mock_disable: mock.Mock
+    ) -> None:
+        app = ManagerApp.__new__(ManagerApp)
+        config = mock.Mock()
+        config.auth_dir = Path("C:/cliproxy/auth")
+        app._reload_runtime_config = mock.Mock(return_value=config)
+        app.events = queue.Queue()
+        app.logger = mock.Mock()
+        record = _record()
+
+        app._auth_disable_worker(record)
+
+        event = app.events.get_nowait()
+        self.assertEqual(event[0], "notify")
+        self.assertEqual(event[1], "토큰 사용 중지 실패")
+        self.assertIn("이동 실패", event[2])
 
 
 class BackendDirectoryTests(unittest.TestCase):

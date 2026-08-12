@@ -12,6 +12,7 @@ CLIProxyAPI 릴리스를 확인합니다.
 - 시작 시 및 6시간 간격으로 공식 CLIProxyAPI 릴리스 확인
 - 릴리스 자산의 SHA-256 검증, 업데이트 실패 시 자동 롤백
 - OAuth 만료 감지와 공급자별 재로그인 버튼
+- 선택한 인증 토큰 사용 중지(`auth-disabled` 폴더로 보관 이동)
 - Claude Code 전역 서브에이전트 및 Fable/Opus/Sonnet/Haiku 모델 설정
 - 현재 CLIProxyAPI 연결을 Claude Code 전역 설정에 안전하게 적용
 - CLIProxyAPI 모델 목록 조회와 사용자 정의 모델 ID 직접 입력
@@ -242,6 +243,10 @@ CLIProxyAPI가 Bearer 인증을 사용하므로 `ANTHROPIC_API_KEY`를 새로 �
 
 CLIProxyAPI가 자체적으로 토큰을 갱신할 시간을 주기 위해 만료 후 5분 동안
 기다립니다. 이후에도 만료 상태라면 알림과 재로그인 창을 표시합니다.
+
+인증 토큰 목록에서 항목을 선택하고 **선택 토큰 사용 중지(보관)** 버튼을 누르면
+토큰 JSON 파일이 `auth-dir` 옆의 `auth-disabled` 폴더로 이동합니다. 파일 내용은
+수정하지 않으므로, 다시 사용하려면 파일을 원래 인증 폴더로 옮기면 됩니다.
 
 ## 소스에서 빌드
 

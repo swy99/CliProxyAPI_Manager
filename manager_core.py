@@ -619,6 +619,44 @@ def scan_auth_records(
     return records
 
 
+def disable_auth_file(auth_dir: Path, path: Path) -> Path:
+    """Move an auth JSON file into the sibling quarantine directory.
+
+    The file contents are never read, so token values stay untouched. The
+    destination directory sits next to the auth directory (``auth`` becomes
+    ``auth-disabled``); CLIProxyAPI stops using the credential because it only
+    watches the auth directory itself.
+    """
+
+    resolved_dir = auth_dir.resolve()
+    resolved_path = path.resolve()
+    if resolved_path.parent != resolved_dir:
+        raise ValueError(f"인증 폴더 밖의 파일은 옮길 수 없습니다: {path}")
+    if resolved_path.suffix.casefold() != ".json":
+        raise ValueError(f"인증 토큰 JSON 파일이 아닙니다: {path}")
+    if not resolved_path.is_file():
+        raise FileNotFoundError(f"인증 파일을 찾을 수 없습니다: {path}")
+
+    disabled_dir = resolved_dir.with_name(resolved_dir.name + "-disabled")
+    disabled_dir.mkdir(parents=True, exist_ok=True)
+
+    destination = disabled_dir / resolved_path.name
+    if destination.exists():
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        destination = disabled_dir / (
+            f"{resolved_path.stem}.{stamp}{resolved_path.suffix}"
+        )
+        counter = 1
+        while destination.exists():
+            destination = disabled_dir / (
+                f"{resolved_path.stem}.{stamp}-{counter}{resolved_path.suffix}"
+            )
+            counter += 1
+
+    os.replace(resolved_path, destination)
+    return destination
+
+
 def parse_version_output(output: str) -> str | None:
     match = VERSION_PATTERN.search(output)
     return match.group(1) if match else None
