@@ -10,7 +10,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$InstallerVersion = "1.2.1"
+$InstallerVersion = "1.3.0"
 $MaximumAssetBytes = 256MB
 $MaximumScriptBytes = 5MB
 $BackendReleaseApi = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
@@ -482,6 +482,24 @@ debug: false
 pprof:
   enable: false
 ws-auth: true
+
+# Keep the standard Codex model and expose a second fast-mode alias.
+oauth-model-alias:
+  codex:
+    - name: "gpt-5.6-sol"
+      alias: "gpt-5.6-sol-fast"
+      display-name: "GPT-5.6 Sol Fast"
+      fork: true
+      force-mapping: true
+
+# Codex /fast uses the same model with OpenAI's priority service tier.
+payload:
+  override:
+    - models:
+        - name: "gpt-5.6-sol-fast"
+          protocol: "codex"
+      params:
+        service_tier: priority
 "@
     $utf8 = New-Object Text.UTF8Encoding($false)
     [IO.File]::WriteAllText($Path, $configuration, $utf8)
@@ -541,13 +559,13 @@ function Add-ShellShortcutsToProfile {
     $block = @"
 $begin
 # Claude Code 실행 단축키 (cliproxyapi-manager 설치기가 추가).
-# cs 계열: 권한 프롬프트 건너뜀. csg 계열: GPT/Codex 백엔드(약 258K)용 --autocompact 230k.
+# cs 계열: 권한 프롬프트 건너뜀. csg 계열: 현재 모델 컨텍스트에 맞춘 동적 자동 압축.
 function cs   { & claude --dangerously-skip-permissions @args }
 function csr  { & claude --dangerously-skip-permissions --resume @args }
 function csw  { & claude --dangerously-skip-permissions -w @args }
-function csg  { & claude --dangerously-skip-permissions --autocompact 230k @args }
-function csgr { & claude --dangerously-skip-permissions --autocompact 230k --resume @args }
-function csgw { & claude --dangerously-skip-permissions --autocompact 230k -w @args }
+function csg  { & claude --dangerously-skip-permissions --autocompact auto @args }
+function csgr { & claude --dangerously-skip-permissions --autocompact auto --resume @args }
+function csgw { & claude --dangerously-skip-permissions --autocompact auto -w @args }
 $end
 "@
 
@@ -586,9 +604,9 @@ function Add-CmdShortcuts {
 doskey cs=claude --dangerously-skip-permissions `$*
 doskey csr=claude --dangerously-skip-permissions --resume `$*
 doskey csw=claude --dangerously-skip-permissions -w `$*
-doskey csg=claude --dangerously-skip-permissions --autocompact 230k `$*
-doskey csgr=claude --dangerously-skip-permissions --autocompact 230k --resume `$*
-doskey csgw=claude --dangerously-skip-permissions --autocompact 230k -w `$*
+doskey csg=claude --dangerously-skip-permissions --autocompact auto `$*
+doskey csgr=claude --dangerously-skip-permissions --autocompact auto --resume `$*
+doskey csgw=claude --dangerously-skip-permissions --autocompact auto -w `$*
 "@
 
     $directory = Split-Path -Parent $AliasFilePath

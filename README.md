@@ -59,8 +59,8 @@ npx -y github:swy99/CliProxyAPI_Manager
 
 - Windows PowerShell 프로필과 cmd(doskey)에 단축키 추가
   - `cs` / `csr` / `csw` — `claude --dangerously-skip-permissions` (+ `--resume` / `-w`)
-  - `csg` / `csgr` / `csgw` — 위와 같되 `--autocompact 230k`. GPT/Codex 백엔드처럼
-    입력 창이 약 258K로 좁은 모델에서 컨텍스트 초과(400)를 피하기 위한 설정입니다.
+  - `csg` / `csgr` / `csgw` — 위와 같되 `--autocompact auto`. Claude Code가 현재
+    선택 모델의 컨텍스트 창에 맞춰 자동 압축 임계값을 동적으로 결정합니다.
 - `%USERPROFILE%\.claude\settings.json`의 `autoCompactEnabled`를 `true`로 보장
 
 기존 프로필과 설정은 보존하며, 다시 실행해도 중복 없이 갱신합니다(멱등). cmd
@@ -68,6 +68,36 @@ npx -y github:swy99/CliProxyAPI_Manager
 있으면 덮어쓰지 않고 이어 붙입니다. 단축키는 새 터미널부터 적용됩니다. 설치기의
 이 선택 단계 자체는 `ANTHROPIC_BASE_URL`이나 모델 배선을 바꾸지 않습니다. 연결을
 바꾸려면 설치 후 Manager의 **CLIProxyAPI 연결 적용** 버튼을 사용합니다.
+
+### Codex Fast 모델
+
+새 기본 `config.yaml`은 모델 목록에 다음 두 ID를 함께 노출합니다.
+
+- `gpt-5.6-sol` — 일반 서비스 티어
+- `gpt-5.6-sol-fast` — 같은 `gpt-5.6-sol`에 `service_tier: priority`를 적용하는 Fast mode alias
+
+CLIProxyAPI의 `oauth-model-alias.codex`에서 `fork: true`로 원본과 alias를 함께 유지하고,
+`payload.override`는 fast alias 요청에만 priority 티어를 추가합니다. Codex Spark처럼
+별개의 모델로 라우팅하는 기능이 아닙니다. 기존 `config.yaml`은 설치기가 보존하므로,
+업그레이드 설치에서는 아래 설정을 기존 항목과 병합해야 합니다.
+
+```yaml
+oauth-model-alias:
+  codex:
+    - name: "gpt-5.6-sol"
+      alias: "gpt-5.6-sol-fast"
+      display-name: "GPT-5.6 Sol Fast"
+      fork: true
+      force-mapping: true
+
+payload:
+  override:
+    - models:
+        - name: "gpt-5.6-sol-fast"
+          protocol: "codex"
+      params:
+        service_tier: priority
+```
 
 ### 설치 옵션
 
@@ -204,7 +234,7 @@ npm pack --dry-run
 
 ## 릴리스와 npm 게시
 
-`v1.2.1`처럼 `v*` 태그를 푸시하면 GitHub Actions가 버전 일치 여부를 확인하고
+`v1.3.0`처럼 `v*` 태그를 푸시하면 GitHub Actions가 버전 일치 여부를 확인하고
 다음 자산을 GitHub Release에 게시합니다.
 
 - `CLIProxyAPI-Manager.exe`

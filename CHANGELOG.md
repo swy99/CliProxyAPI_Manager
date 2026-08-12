@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.0 - 2026-08-12
+
+- Replaces the fixed `230k` GPT shortcut threshold with Claude Code's model-aware `--autocompact auto` mode.
+- Exposes `gpt-5.6-sol` and `gpt-5.6-sol-fast` as separate client-visible models; the fast alias routes to the same Codex model with `service_tier: priority`.
+
 ## 1.2.1 - 2026-08-12
 
 - Reloads `config.yaml` before model discovery, health monitoring, restart, update, and login operations so rotated API keys and connection changes no longer leave the Manager sending stale credentials that can cause HTTP 401 responses.

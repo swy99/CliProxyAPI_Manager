@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import unittest
 
+import yaml
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,6 +60,46 @@ class InstallerContractTests(unittest.TestCase):
         )
         self.assertIn("기존 config.yaml을 변경하지 않고 보존합니다.", installer)
         self.assertIn('$ManagerDir = Join-Path $InstallDir "manager"', installer)
+
+    def test_shell_shortcuts_use_model_aware_auto_compaction(self) -> None:
+        installer = (PROJECT_ROOT / "install.ps1").read_text(encoding="utf-8")
+
+        self.assertEqual(installer.count("--autocompact auto"), 6)
+        self.assertNotIn("--autocompact 230k", installer)
+
+    def test_default_config_exposes_standard_and_fast_sol_models(self) -> None:
+        installer = (PROJECT_ROOT / "install.ps1").read_text(encoding="utf-8")
+        match = re.search(
+            r'\$configuration = @"\n(?P<yaml>.*?)\n"@',
+            installer,
+            re.DOTALL,
+        )
+
+        self.assertIsNotNone(match)
+        config = yaml.safe_load(match.group("yaml"))
+        self.assertEqual(
+            config["oauth-model-alias"]["codex"],
+            [
+                {
+                    "name": "gpt-5.6-sol",
+                    "alias": "gpt-5.6-sol-fast",
+                    "display-name": "GPT-5.6 Sol Fast",
+                    "fork": True,
+                    "force-mapping": True,
+                }
+            ],
+        )
+        self.assertEqual(
+            config["payload"]["override"],
+            [
+                {
+                    "models": [
+                        {"name": "gpt-5.6-sol-fast", "protocol": "codex"}
+                    ],
+                    "params": {"service_tier": "priority"},
+                }
+            ],
+        )
 
     def test_npx_wrapper_uses_argument_array_without_shell(self) -> None:
         wrapper = (PROJECT_ROOT / "bin" / "cli.js").read_text(encoding="utf-8")
