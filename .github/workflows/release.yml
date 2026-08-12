@@ -49,7 +49,9 @@ jobs:
       - name: Run Linux integration test
         shell: bash
         run: |
-          HOME="$RUNNER_TEMP/cliproxy-home" bash tests/linux_integration.sh
+          HOME="$RUNNER_TEMP/cliproxy-home" \
+          XDG_CONFIG_HOME="$RUNNER_TEMP/cliproxy-home/.config" \
+            bash tests/linux_integration.sh
 
   release:
     needs: validate-linux

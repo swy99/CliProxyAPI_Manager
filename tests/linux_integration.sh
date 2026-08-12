@@ -11,6 +11,7 @@ report_error() {
 trap report_error ERR
 
 PROJECT_ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
+SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 bash -n "$PROJECT_ROOT/install.sh"
 bash -n "$PROJECT_ROOT/linux/cliproxyapi-manager.sh"
@@ -79,7 +80,7 @@ PATH="$HOME/fakebin:$PATH" "$HOME/CLIProxyAPI/install.sh" \
 config_hash_after="$(sha256sum "$HOME/CLIProxyAPI/config.yaml" | awk '{print $1}')"
 [[ "$config_hash_before" == "$config_hash_after" ]]
 grep -Fq "# CLIProxyAPI_HOME=$HOME/CLIProxyAPI" \
-    "$HOME/.config/systemd/user/cliproxyapi-manager.service"
-grep -Fq 'ExecStart="' "$HOME/.config/systemd/user/cliproxyapi-manager.service"
+    "$SYSTEMD_USER_DIR/cliproxyapi-manager.service"
+grep -Fq 'ExecStart="' "$SYSTEMD_USER_DIR/cliproxyapi-manager.service"
 grep -Fq -- '--user enable cliproxyapi-manager.service' "$HOME/systemctl-calls.log"
 "$MANAGER" version
