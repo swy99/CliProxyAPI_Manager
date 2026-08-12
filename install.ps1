@@ -10,7 +10,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$InstallerVersion = "1.1.0"
+$InstallerVersion = "1.2.0"
 $MaximumAssetBytes = 256MB
 $MaximumScriptBytes = 5MB
 $BackendReleaseApi = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
@@ -533,6 +533,194 @@ function Install-ClaudeCode {
     Write-Step "Claude Code 설치 확인: $version"
 }
 
+function Add-ShellShortcutsToProfile {
+    param([Parameter(Mandatory = $true)][string]$ProfilePath)
+
+    $begin = "# >>> cliproxyapi-manager shortcuts >>>"
+    $end = "# <<< cliproxyapi-manager shortcuts <<<"
+    $block = @"
+$begin
+# Claude Code 실행 단축키 (cliproxyapi-manager 설치기가 추가).
+# cs 계열: 권한 프롬프트 건너뜀. csg 계열: GPT/Codex 백엔드(약 258K)용 --autocompact 230k.
+function cs   { & claude --dangerously-skip-permissions @args }
+function csr  { & claude --dangerously-skip-permissions --resume @args }
+function csw  { & claude --dangerously-skip-permissions -w @args }
+function csg  { & claude --dangerously-skip-permissions --autocompact 230k @args }
+function csgr { & claude --dangerously-skip-permissions --autocompact 230k --resume @args }
+function csgw { & claude --dangerously-skip-permissions --autocompact 230k -w @args }
+$end
+"@
+
+    $directory = Split-Path -Parent $ProfilePath
+    if (-not [string]::IsNullOrEmpty($directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    $existing = ""
+    if (Test-Path -LiteralPath $ProfilePath -PathType Leaf) {
+        $existing = [IO.File]::ReadAllText($ProfilePath)
+    }
+
+    $pattern = [regex]::Escape($begin) + "(?s).*?" + [regex]::Escape($end)
+    if ([regex]::IsMatch($existing, $pattern)) {
+        $evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($match) $block }
+        $updated = [regex]::Replace($existing, $pattern, $evaluator)
+    }
+    else {
+        if ($existing.Length -gt 0 -and -not $existing.EndsWith("`n")) {
+            $existing += "`r`n"
+        }
+        $updated = $existing + $block + "`r`n"
+    }
+
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($ProfilePath, $updated, $utf8)
+}
+
+function Add-CmdShortcuts {
+    param([Parameter(Mandatory = $true)][string]$AliasFilePath)
+
+    $content = @"
+@echo off
+:: cliproxyapi-manager Claude Code shortcuts (doskey). Managed by installer.
+doskey cs=claude --dangerously-skip-permissions `$*
+doskey csr=claude --dangerously-skip-permissions --resume `$*
+doskey csw=claude --dangerously-skip-permissions -w `$*
+doskey csg=claude --dangerously-skip-permissions --autocompact 230k `$*
+doskey csgr=claude --dangerously-skip-permissions --autocompact 230k --resume `$*
+doskey csgw=claude --dangerously-skip-permissions --autocompact 230k -w `$*
+"@
+
+    $directory = Split-Path -Parent $AliasFilePath
+    if (-not [string]::IsNullOrEmpty($directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($AliasFilePath, $content, $utf8)
+}
+
+function Register-CmdAutoRun {
+    param([Parameter(Mandatory = $true)][string]$AliasFilePath)
+
+    $key = "HKCU:\Software\Microsoft\Command Processor"
+    if (-not (Test-Path -LiteralPath $key)) {
+        New-Item -Path $key -Force | Out-Null
+    }
+
+    $entry = 'if exist "' + $AliasFilePath + '" call "' + $AliasFilePath + '"'
+    $current = $null
+    try {
+        $current = [string](Get-ItemProperty -Path $key -Name "AutoRun" -ErrorAction Stop).AutoRun
+    }
+    catch {
+        $current = $null
+    }
+
+    if ([string]::IsNullOrWhiteSpace($current)) {
+        Set-ItemProperty -Path $key -Name "AutoRun" -Value $entry
+    }
+    elseif ($current.IndexOf($AliasFilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        return
+    }
+    else {
+        Set-ItemProperty -Path $key -Name "AutoRun" -Value ($current + " & " + $entry)
+    }
+}
+
+function Enable-ClaudeAutoCompact {
+    param([Parameter(Mandatory = $true)][string]$SettingsPath)
+
+    $directory = Split-Path -Parent $SettingsPath
+    if (-not [string]::IsNullOrEmpty($directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    $data = $null
+    if (Test-Path -LiteralPath $SettingsPath -PathType Leaf) {
+        $raw = [IO.File]::ReadAllText($SettingsPath)
+        if (-not [string]::IsNullOrWhiteSpace($raw)) {
+            $data = $raw | ConvertFrom-Json
+        }
+    }
+    if ($null -eq $data) {
+        $data = [pscustomobject]@{}
+    }
+
+    $hasProperty = ($data.PSObject.Properties.Name -contains "autoCompactEnabled")
+    if ($hasProperty -and $data.autoCompactEnabled -eq $true) {
+        return $false
+    }
+
+    if ($hasProperty) {
+        $data.autoCompactEnabled = $true
+    }
+    else {
+        $data | Add-Member -NotePropertyName "autoCompactEnabled" -NotePropertyValue $true
+    }
+
+    $json = $data | ConvertTo-Json -Depth 25
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($SettingsPath, $json, $utf8)
+    return $true
+}
+
+function Invoke-ShellShortcutSetup {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    if (-not [Environment]::UserInteractive) {
+        Write-Step "비대화형 실행이라 셸 단축키 설정을 건너뜁니다."
+        return "skipped"
+    }
+
+    $answer = ""
+    try {
+        $answer = Read-Host "[CLIProxyAPI] 셸 단축키(cs/csg 등)와 autoCompact 설정을 추가할까요? (y/N)"
+    }
+    catch {
+        return "skipped"
+    }
+    if ($answer -notmatch '^\s*(y|yes)\s*$') {
+        Write-Step "셸 단축키 설정을 건너뜁니다."
+        return "skipped"
+    }
+
+    $applied = @()
+
+    try {
+        $profilePath = $PROFILE.CurrentUserAllHosts
+        Add-ShellShortcutsToProfile -ProfilePath $profilePath
+        $applied += "PowerShell"
+    }
+    catch {
+        Write-Warning "PowerShell 프로필 단축키 설정 실패: $($_.Exception.Message)"
+    }
+
+    try {
+        $aliasFile = Join-Path $InstallDir "cmd-aliases.cmd"
+        Add-CmdShortcuts -AliasFilePath $aliasFile
+        Register-CmdAutoRun -AliasFilePath $aliasFile
+        $applied += "cmd"
+    }
+    catch {
+        Write-Warning "cmd 단축키 설정 실패: $($_.Exception.Message)"
+    }
+
+    try {
+        $settingsPath = Join-Path $env:USERPROFILE ".claude\settings.json"
+        Enable-ClaudeAutoCompact -SettingsPath $settingsPath | Out-Null
+        $applied += "settings.json"
+    }
+    catch {
+        Write-Warning "settings.json autoCompact 설정 실패: $($_.Exception.Message)"
+    }
+
+    if ($applied.Count -gt 0) {
+        Write-Step ("셸 단축키/설정 적용: " + ($applied -join ", "))
+        return "added"
+    }
+    return "failed"
+}
+
 if ($env:OS -ne "Windows_NT") {
     throw "이 설치기는 Windows 10/11에서만 지원됩니다."
 }
@@ -680,6 +868,14 @@ try {
         Start-Process -FilePath $BackendPath -ArgumentList @("-config", $ConfigPath) -WorkingDirectory $InstallDir | Out-Null
     }
 
+    $shellSetupResult = "skipped"
+    try {
+        $shellSetupResult = Invoke-ShellShortcutSetup -InstallDir $InstallDir
+    }
+    catch {
+        Write-Warning "셸 단축키 설정 중 오류가 발생해 건너뜁니다: $($_.Exception.Message)"
+    }
+
     Write-Host ""
     Write-Host "설치 완료"
     Write-Host "  설치 경로: $InstallDir"
@@ -688,6 +884,9 @@ try {
         Write-Host "  Claude Code: $(Get-ClaudeCodeVersion)"
     }
     Write-Host "  Manager: $ManagerPath"
+    if ($shellSetupResult -eq "added") {
+        Write-Host "  셸 단축키: cs/csr/csw/csg/csgr/csgw (새 터미널에서 적용)"
+    }
     Write-Host ""
     Write-Host "Manager에서 사용할 공급자의 로그인/OAuth를 진행하세요."
     Write-Host "Claude Code 진단이 필요하면 새 터미널에서 'claude doctor'를 실행하세요."

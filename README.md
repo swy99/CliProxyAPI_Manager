@@ -50,6 +50,23 @@ npx -y github:swy99/CliProxyAPI_Manager
 기존 `config.yaml`은 변경하지 않습니다. 설치가 끝나면 Manager에서 사용할 공급자의
 로그인/OAuth를 진행해야 합니다. Claude Code 계정 로그인도 별도 사용자 동작입니다.
 
+### 셸 단축키와 자동 컴팩트 (선택)
+
+설치 마지막에 Claude Code 실행 단축키 추가 여부를 한 번 묻습니다. 기본값은
+"아니오"이며, 비대화형(파이프) 실행에서는 묻지 않고 건너뜁니다. 수락하면 다음을
+적용합니다.
+
+- Windows PowerShell 프로필과 cmd(doskey)에 단축키 추가
+  - `cs` / `csr` / `csw` — `claude --dangerously-skip-permissions` (+ `--resume` / `-w`)
+  - `csg` / `csgr` / `csgw` — 위와 같되 `--autocompact 230k`. GPT/Codex 백엔드처럼
+    입력 창이 약 258K로 좁은 모델에서 컨텍스트 초과(400)를 피하기 위한 설정입니다.
+- `%USERPROFILE%\.claude\settings.json`의 `autoCompactEnabled`를 `true`로 보장
+
+기존 프로필과 설정은 보존하며, 다시 실행해도 중복 없이 갱신합니다(멱등). cmd
+단축키는 현재 사용자 범위의 `AutoRun` 레지스트리 값을 통해 로드되며, 기존 값이
+있으면 덮어쓰지 않고 이어 붙입니다. 단축키는 새 터미널부터 적용됩니다. 이 단계는
+`ANTHROPIC_BASE_URL`이나 모델 배선을 바꾸지 않습니다.
+
 ### 설치 옵션
 
 npx에서는 다음 옵션을 사용할 수 있습니다.
