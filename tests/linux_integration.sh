@@ -2,6 +2,14 @@
 
 set -Eeuo pipefail
 
+report_error() {
+    local exit_code=$?
+    printf '::error file=tests/linux_integration.sh,line=%s::Exit %s while running: %s\n' \
+        "${BASH_LINENO[0]}" "$exit_code" "$BASH_COMMAND"
+    exit "$exit_code"
+}
+trap report_error ERR
+
 PROJECT_ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
 
 bash -n "$PROJECT_ROOT/install.sh"
