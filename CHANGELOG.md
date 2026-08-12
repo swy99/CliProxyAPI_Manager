@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1 - 2026-08-12
+
+- Changes the default install directory from `%LOCALAPPDATA%\CLIProxyAPI` to `%USERPROFILE%\CLIProxyAPI`.
+- Reuses a single existing installation discovered from the home/legacy paths, startup registration, or running processes, and refuses ambiguous or conflicting installs.
+
 ## 1.3.0 - 2026-08-12
 
 - Replaces the fixed `230k` GPT shortcut threshold with Claude Code's model-aware `--autocompact auto` mode.

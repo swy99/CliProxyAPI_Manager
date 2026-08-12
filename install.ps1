@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$InstallDir = (Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "CLIProxyAPI"),
+    [string]$InstallDir = (Join-Path ([Environment]::GetFolderPath("UserProfile")) "CLIProxyAPI"),
     [switch]$SkipClaudeCode,
     [switch]$SkipStartupRegistration,
     [switch]$NoLaunch
@@ -10,7 +10,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$InstallerVersion = "1.3.0"
+$InstallerVersion = "1.3.1"
 $MaximumAssetBytes = 256MB
 $MaximumScriptBytes = 5MB
 $BackendReleaseApi = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
@@ -36,6 +36,104 @@ function Resolve-InstallDirectory {
         return [IO.Path]::GetFullPath($expanded)
     }
     return [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $expanded))
+}
+
+function Test-CLIProxyInstallationDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return (
+        (Test-Path -LiteralPath $Path -PathType Container) -and
+        (Test-Path -LiteralPath (Join-Path $Path "cli-proxy-api.exe") -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $Path "config.yaml") -PathType Leaf)
+    )
+}
+
+function Get-InstallDirectoryFromManagerCommand {
+    param([AllowNull()][string]$Command)
+
+    if ([string]::IsNullOrWhiteSpace($Command)) {
+        return $null
+    }
+    $trimmed = $Command.Trim()
+    $executable = $null
+    if ($trimmed.StartsWith('"')) {
+        $closingQuote = $trimmed.IndexOf('"', 1)
+        if ($closingQuote -gt 1) {
+            $executable = $trimmed.Substring(1, $closingQuote - 1)
+        }
+    }
+    else {
+        $match = [regex]::Match($trimmed, '^(?<path>.+?\.exe)(?:\s|$)', 'IgnoreCase')
+        if ($match.Success) {
+            $executable = $match.Groups['path'].Value
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($executable) -or
+        [IO.Path]::GetFileName($executable) -ine $ManagerAssetName) {
+        return $null
+    }
+
+    $managerDirectory = Split-Path -Parent ([IO.Path]::GetFullPath($executable))
+    if ([IO.Path]::GetFileName($managerDirectory) -ieq "manager") {
+        return Split-Path -Parent $managerDirectory
+    }
+    return $managerDirectory
+}
+
+function Get-ExistingInstallationDirectories {
+    param([Parameter(Mandatory = $true)][string]$HomeInstallDirectory)
+
+    $candidates = @($HomeInstallDirectory)
+    $legacyLocalAppData = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "CLIProxyAPI"
+    $candidates += $legacyLocalAppData
+
+    try {
+        $startupCommand = Get-ItemPropertyValue `
+            -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+            -Name "CLIProxyAPI Manager" -ErrorAction Stop
+        $startupDirectory = Get-InstallDirectoryFromManagerCommand ([string]$startupCommand)
+        if (-not [string]::IsNullOrWhiteSpace($startupDirectory)) {
+            $candidates += $startupDirectory
+        }
+    }
+    catch {
+        # No existing Manager startup registration.
+    }
+
+    try {
+        $runningProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+            $_.Name -in @("cli-proxy-api.exe", $ManagerAssetName) -and
+            -not [string]::IsNullOrWhiteSpace($_.ExecutablePath)
+        })
+        foreach ($process in $runningProcesses) {
+            $processPath = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
+            $processDirectory = Split-Path -Parent $processPath
+            if ([IO.Path]::GetFileName($processPath) -ieq $ManagerAssetName -and
+                [IO.Path]::GetFileName($processDirectory) -ieq "manager") {
+                $processDirectory = Split-Path -Parent $processDirectory
+            }
+            $candidates += $processDirectory
+        }
+    }
+    catch {
+        # Installation discovery still works from known paths and startup registration.
+    }
+
+    $seen = @{}
+    $existing = @()
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace([string]$candidate)) {
+            continue
+        }
+        $resolved = Resolve-InstallDirectory ([string]$candidate)
+        $key = $resolved.ToLowerInvariant()
+        if (-not $seen.ContainsKey($key) -and
+            (Test-CLIProxyInstallationDirectory $resolved)) {
+            $seen[$key] = $true
+            $existing += $resolved
+        }
+    }
+    return $existing
 }
 
 function Assert-HttpsUri {
@@ -744,7 +842,36 @@ if ($env:OS -ne "Windows_NT") {
 }
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
+$installDirectoryWasExplicit = $PSBoundParameters.ContainsKey("InstallDir")
+$homeInstallDirectory = Resolve-InstallDirectory `
+    (Join-Path ([Environment]::GetFolderPath("UserProfile")) "CLIProxyAPI")
 $InstallDir = Resolve-InstallDirectory $InstallDir
+$existingInstallations = @(Get-ExistingInstallationDirectories $homeInstallDirectory)
+
+if ($installDirectoryWasExplicit) {
+    $conflictingInstallations = @($existingInstallations | Where-Object {
+        -not $_.Equals($InstallDir, [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($conflictingInstallations.Count -gt 0) {
+        throw (
+            "지정한 경로와 다른 CLIProxyAPI 설치가 발견됐습니다: " +
+            ($conflictingInstallations -join ", ") +
+            ". 포트·시작프로그램 충돌을 막기 위해 설치를 중단합니다. " +
+            "기존 설치를 이동/제거하거나 해당 경로를 -InstallDir로 지정하세요."
+        )
+    }
+}
+elseif ($existingInstallations.Count -eq 1) {
+    $InstallDir = $existingInstallations[0]
+    Write-Step "기존 CLIProxyAPI 설치를 재사용합니다: $InstallDir"
+}
+elseif ($existingInstallations.Count -gt 1) {
+    throw (
+        "CLIProxyAPI 설치가 여러 곳에서 발견됐습니다: " +
+        ($existingInstallations -join ", ") +
+        ". 충돌을 막기 위해 설치를 중단합니다. 사용할 경로를 -InstallDir로 명시하세요."
+    )
+}
 $ManagerDir = Join-Path $InstallDir "manager"
 $BackendPath = Join-Path $InstallDir "cli-proxy-api.exe"
 $ConfigPath = Join-Path $InstallDir "config.yaml"

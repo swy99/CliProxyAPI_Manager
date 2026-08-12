@@ -44,12 +44,16 @@ npx -y github:swy99/CliProxyAPI_Manager
 - 공식 GitHub Release에서 Windows 아키텍처에 맞는 CLIProxyAPI 다운로드
 - CLIProxyAPI와 Manager 실행 파일의 SHA-256 검증
 - Claude Code가 없을 때 Anthropic 공식 PowerShell 설치기 실행
-- `%LOCALAPPDATA%\CLIProxyAPI`에 backend와 Manager 배치
+- `%USERPROFILE%\CLIProxyAPI`에 backend와 Manager 배치
 - 새 설치에 localhost 전용 `config.yaml`과 임의 API 키 생성
 - Manager를 Windows 시작프로그램에 등록하고 실행
 
 기존 `config.yaml`은 변경하지 않습니다. 설치가 끝나면 Manager에서 사용할 공급자의
 로그인/OAuth를 진행해야 합니다. Claude Code 계정 로그인도 별도 사용자 동작입니다.
+
+설치 경로를 생략하면 홈·이전 AppData 기본 경로·시작프로그램 등록·실행 중 프로세스에서
+기존 설치를 검색합니다. 하나만 발견되면 그 위치를 그대로 재사용하며, 여러 설치 또는
+명시 경로와 다른 기존 설치가 발견되면 포트와 시작프로그램 충돌을 막기 위해 중단합니다.
 
 ### 셸 단축키와 자동 컴팩트 (선택)
 
@@ -104,7 +108,7 @@ payload:
 npx에서는 다음 옵션을 사용할 수 있습니다.
 
 ```powershell
-npx -y cliproxyapi-manager --install-dir "D:\CLIProxyAPI"
+npx -y cliproxyapi-manager --install-dir "$env:USERPROFILE\CLIProxyAPI"
 npx -y cliproxyapi-manager --skip-claude-code
 npx -y cliproxyapi-manager --skip-startup --no-launch
 ```
@@ -142,8 +146,8 @@ PowerShell 파일을 직접 실행할 때의 대응 옵션은 `-InstallDir`,
 `%USERPROFILE%\.cli-proxy-api`에 있으므로 아래 명령으로 삭제되지 않습니다.
 
 ```powershell
-& "$env:LOCALAPPDATA\CLIProxyAPI\manager\CLIProxyAPI-Manager.exe" --remove-startup
-Remove-Item "$env:LOCALAPPDATA\CLIProxyAPI" -Recurse -Force
+& "$env:USERPROFILE\CLIProxyAPI\manager\CLIProxyAPI-Manager.exe" --remove-startup
+Remove-Item "$env:USERPROFILE\CLIProxyAPI" -Recurse -Force
 ```
 
 통합 설치기가 설치한 Claude Code는 다른 프로젝트에서도 사용할 수 있으므로 자동으로
@@ -234,7 +238,7 @@ npm pack --dry-run
 
 ## 릴리스와 npm 게시
 
-`v1.3.0`처럼 `v*` 태그를 푸시하면 GitHub Actions가 버전 일치 여부를 확인하고
+`v1.3.1`처럼 `v*` 태그를 푸시하면 GitHub Actions가 버전 일치 여부를 확인하고
 다음 자산을 GitHub Release에 게시합니다.
 
 - `CLIProxyAPI-Manager.exe`

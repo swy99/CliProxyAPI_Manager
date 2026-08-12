@@ -61,6 +61,23 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("기존 config.yaml을 변경하지 않고 보존합니다.", installer)
         self.assertIn('$ManagerDir = Join-Path $InstallDir "manager"', installer)
 
+    def test_default_path_uses_user_home_and_detects_conflicting_installs(
+        self,
+    ) -> None:
+        installer = (PROJECT_ROOT / "install.ps1").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            installer,
+            r'\[string\]\$InstallDir = \(Join-Path '
+            r'\(\[Environment\]::GetFolderPath\("UserProfile"\)\) '
+            r'"CLIProxyAPI"\)',
+        )
+        self.assertIn("function Get-ExistingInstallationDirectories", installer)
+        self.assertIn('$PSBoundParameters.ContainsKey("InstallDir")', installer)
+        self.assertIn("기존 CLIProxyAPI 설치를 재사용합니다", installer)
+        self.assertIn("CLIProxyAPI 설치가 여러 곳에서 발견됐습니다", installer)
+        self.assertIn("지정한 경로와 다른 CLIProxyAPI 설치가 발견됐습니다", installer)
+
     def test_shell_shortcuts_use_model_aware_auto_compaction(self) -> None:
         installer = (PROJECT_ROOT / "install.ps1").read_text(encoding="utf-8")
 
