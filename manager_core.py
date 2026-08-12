@@ -35,6 +35,9 @@ STARTUP_VALUE_NAME = "CLIProxyAPI Manager"
 VERSION_PATTERN = re.compile(r"CLIProxyAPI Version:\s*v?([^,\s]+)", re.IGNORECASE)
 LOGIN_FLAG_PATTERN = re.compile(r"^\s+-(?P<flag>[\w-]+-login)\s*$", re.MULTILINE)
 CLAUDE_CODE_SUBAGENT_MODEL_KEY = "CLAUDE_CODE_SUBAGENT_MODEL"
+ANTHROPIC_DEFAULT_FABLE_MODEL_KEY = "ANTHROPIC_DEFAULT_FABLE_MODEL"
+ANTHROPIC_DEFAULT_OPUS_MODEL_KEY = "ANTHROPIC_DEFAULT_OPUS_MODEL"
+ANTHROPIC_DEFAULT_SONNET_MODEL_KEY = "ANTHROPIC_DEFAULT_SONNET_MODEL"
 ANTHROPIC_DEFAULT_HAIKU_MODEL_KEY = "ANTHROPIC_DEFAULT_HAIKU_MODEL"
 ANTHROPIC_BASE_URL_KEY = "ANTHROPIC_BASE_URL"
 ANTHROPIC_AUTH_TOKEN_KEY = "ANTHROPIC_AUTH_TOKEN"
@@ -74,6 +77,9 @@ class ManagerConfig:
 class ClaudeCodeModelSettings:
     subagent_model: str | None
     haiku_model: str | None
+    fable_model: str | None = None
+    opus_model: str | None = None
+    sonnet_model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -252,6 +258,9 @@ def load_claude_code_model_settings(
     env = document.get("env") or {}
     return ClaudeCodeModelSettings(
         subagent_model=_model_setting_value(env, CLAUDE_CODE_SUBAGENT_MODEL_KEY),
+        fable_model=_model_setting_value(env, ANTHROPIC_DEFAULT_FABLE_MODEL_KEY),
+        opus_model=_model_setting_value(env, ANTHROPIC_DEFAULT_OPUS_MODEL_KEY),
+        sonnet_model=_model_setting_value(env, ANTHROPIC_DEFAULT_SONNET_MODEL_KEY),
         haiku_model=_model_setting_value(env, ANTHROPIC_DEFAULT_HAIKU_MODEL_KEY),
     )
 
@@ -376,6 +385,15 @@ def save_claude_code_model_settings(
         {
             CLAUDE_CODE_SUBAGENT_MODEL_KEY: _normalized_optional_value(
                 settings.subagent_model
+            ),
+            ANTHROPIC_DEFAULT_FABLE_MODEL_KEY: _normalized_optional_value(
+                settings.fable_model
+            ),
+            ANTHROPIC_DEFAULT_OPUS_MODEL_KEY: _normalized_optional_value(
+                settings.opus_model
+            ),
+            ANTHROPIC_DEFAULT_SONNET_MODEL_KEY: _normalized_optional_value(
+                settings.sonnet_model
             ),
             ANTHROPIC_DEFAULT_HAIKU_MODEL_KEY: _normalized_optional_value(
                 settings.haiku_model
