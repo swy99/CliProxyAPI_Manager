@@ -1,6 +1,6 @@
 # CLIProxyAPI Manager
 
-CLIProxyAPI Manager는 Windows 알림 영역에서
+CLIProxyAPI Manager는 Windows 알림 영역과 Linux 사용자 서비스에서
 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)를 감시하는 작은
 데스크톱 도구입니다. 서버가 종료되면 다시 시작하고, OAuth 인증 만료와 새
 CLIProxyAPI 릴리스를 확인합니다.
@@ -17,17 +17,20 @@ CLIProxyAPI 릴리스를 확인합니다.
 - CLIProxyAPI 모델 목록 조회와 사용자 정의 모델 ID 직접 입력
 - Windows 로그인 시 자동 실행
 - 창을 닫아도 계속 동작하는 시스템 트레이 인터페이스
+- Linux systemd 사용자 서비스 또는 PID 기반 프로세스 관리
+- Linux용 시작·중지·상태·로그·로그인·업데이트 명령
 
 ## 원라인 설치
 
 Windows 10/11의 일반 사용자 PowerShell에서 다음 명령을 실행합니다. Node.js가
-필요하지 않으므로 새 PC에서는 이 방법을 권장합니다.
+필요하지 않으므로 새 Windows PC에서는 이 방법을 권장합니다.
 
 ```powershell
 irm https://raw.githubusercontent.com/swy99/CliProxyAPI_Manager/main/install.ps1 | iex
 ```
 
 Node.js 18 이상이 이미 설치되어 있으면 npx로 동일한 설치기를 실행할 수 있습니다.
+이 명령은 Windows와 Linux를 자동 판별합니다.
 
 ```powershell
 npx -y cliproxyapi-manager
@@ -47,6 +50,38 @@ npx -y github:swy99/CliProxyAPI_Manager
 - `%USERPROFILE%\CLIProxyAPI`에 backend와 Manager 배치
 - 새 설치에 localhost 전용 `config.yaml`과 임의 API 키 생성
 - Manager를 Windows 시작프로그램에 등록하고 실행
+
+### Linux 설치
+
+Ubuntu/Debian, WSL과 일반적인 Linux 배포판에서 Node.js 18 이상, `curl`, `tar`,
+`sha256sum`이 준비되어 있으면 같은 명령을 사용합니다.
+
+```bash
+npx -y cliproxyapi-manager
+```
+
+Linux에서는 공식 CLIProxyAPI의 `linux_amd64` 또는 `linux_aarch64` 자산을 SHA-256으로
+검증한 뒤 `$HOME/CLIProxyAPI`에 설치합니다. GUI EXE 대신 다음 네이티브 관리 명령을
+`$HOME/.local/bin`에 연결합니다.
+
+```bash
+cliproxyapi-manager start
+cliproxyapi-manager stop
+cliproxyapi-manager restart
+cliproxyapi-manager status
+cliproxyapi-manager logs
+cliproxyapi-manager login codex
+cliproxyapi-manager update
+```
+
+사용자 systemd가 가능하면 `cliproxyapi-manager.service`를 등록해 로그인 시 자동
+시작하고 장애 시 재시작합니다. WSL·컨테이너처럼 사용자 systemd가 없으면 같은 관리
+명령이 PID 기반 백그라운드 실행으로 전환됩니다. `$HOME/.local/bin`이 `PATH`에 없다면
+새 셸을 열거나 `export PATH="$HOME/.local/bin:$PATH"`를 셸 설정에 추가하세요.
+
+Linux에서도 기존 설치가 하나면 재사용하고, 서로 다른 설치가 여러 개면 포트 충돌을
+막기 위해 중단합니다. `--install-dir`, `--skip-claude-code`, `--skip-startup`,
+`--no-launch` 옵션은 Windows와 동일하게 사용할 수 있습니다.
 
 기존 `config.yaml`은 변경하지 않습니다. 설치가 끝나면 Manager에서 사용할 공급자의
 로그인/OAuth를 진행해야 합니다. Claude Code 계정 로그인도 별도 사용자 동작입니다.
@@ -238,7 +273,7 @@ npm pack --dry-run
 
 ## 릴리스와 npm 게시
 
-`v1.3.1`처럼 `v*` 태그를 푸시하면 GitHub Actions가 버전 일치 여부를 확인하고
+`v1.4.0`처럼 `v*` 태그를 푸시하면 GitHub Actions가 버전 일치 여부를 확인하고
 다음 자산을 GitHub Release에 게시합니다.
 
 - `CLIProxyAPI-Manager.exe`

@@ -9,7 +9,38 @@ permissions:
   contents: write
 
 jobs:
+  validate-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Validate Linux installer
+        shell: bash
+        run: |
+          bash -n install.sh
+          bash -n linux/cliproxyapi-manager.sh
+          shellcheck install.sh linux/cliproxyapi-manager.sh tests/linux_integration.sh
+          node --check bin/cli.js
+          python -m pip install PyYAML
+          python -m unittest discover -s tests -p test_installer.py -v
+          npm pack --dry-run
+          HOME="$RUNNER_TEMP/cliproxy-home" bash tests/linux_integration.sh
+
   release:
+    needs: validate-linux
     runs-on: windows-latest
 
     steps:

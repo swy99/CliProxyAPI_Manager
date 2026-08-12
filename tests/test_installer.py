@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -26,13 +27,20 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(manifest["name"], "cliproxyapi-manager")
         self.assertEqual(manifest["version"], match.group(1))
-        self.assertEqual(manifest["os"], ["win32"])
+        self.assertEqual(manifest["os"], ["win32", "linux"])
         self.assertEqual(
             manifest["bin"], {"cliproxyapi-manager": "bin/cli.js"}
         )
         self.assertEqual(
             manifest["files"],
-            ["bin/", "install.ps1", "README.md", "LICENSE"],
+            [
+                "bin/",
+                "install.ps1",
+                "install.sh",
+                "linux/",
+                "README.md",
+                "LICENSE",
+            ],
         )
 
     def test_installer_has_verified_release_and_config_preservation_contract(
@@ -124,8 +132,52 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn('const { spawn } = require("node:child_process");', wrapper)
         self.assertIn('"-File",', wrapper)
         self.assertIn("...parsed.powershellArguments", wrapper)
+        self.assertIn('isWindows ? "install.ps1" : "install.sh"', wrapper)
+        self.assertIn('const executable = isWindows ? "powershell.exe" : "bash";', wrapper)
+        self.assertIn("...parsed.bashArguments", wrapper)
         self.assertIn("shell: false", wrapper)
         self.assertNotIn("exec(", wrapper)
+
+    def test_linux_installer_and_manager_contract(self) -> None:
+        installer = (PROJECT_ROOT / "install.sh").read_text(encoding="utf-8")
+        manager = (
+            PROJECT_ROOT / "linux" / "cliproxyapi-manager.sh"
+        ).read_text(encoding="utf-8")
+        attributes = (PROJECT_ROOT / ".gitattributes").read_text(encoding="utf-8")
+
+        self.assertIn('INSTALL_DIR="$HOME/CLIProxyAPI"', installer)
+        self.assertIn('RELEASE_ARCH="amd64"', installer)
+        self.assertIn('RELEASE_ARCH="aarch64"', installer)
+        self.assertIn("sha256sum", installer)
+        self.assertIn("oauth-model-alias:", installer)
+        self.assertIn("service_tier: priority", installer)
+        self.assertIn("systemctl --user enable", installer)
+        self.assertIn("multiple installations found", installer)
+        self.assertIn('SERVICE_NAME="cliproxyapi-manager.service"', manager)
+        self.assertIn('while [[ -L "$MANAGER_SOURCE" ]]', manager)
+        self.assertIn("*.sh text eol=lf", attributes)
+        self.assertIn("/bin/*.js text eol=lf", attributes)
+        for command in ("start", "stop", "restart", "status", "logs", "login", "update"):
+            self.assertRegex(manager, rf"(?m)^\s*{command}\)")
+
+    def test_linux_shell_scripts_parse(self) -> None:
+        if os.name == "nt":
+            self.skipTest("Linux Bash validation runs in the release workflow")
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("bash is not available")
+        for script in (
+            PROJECT_ROOT / "install.sh",
+            PROJECT_ROOT / "linux" / "cliproxyapi-manager.sh",
+        ):
+            result = subprocess.run(
+                [bash, "-n", str(script)],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_release_workflow_builds_expected_assets(self) -> None:
         workflow = (
@@ -138,6 +190,11 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("CLIProxyAPI-Manager.exe.sha256", workflow)
         self.assertIn('"install.ps1"', workflow)
         self.assertIn("npm pack --json", workflow)
+        self.assertIn("validate-linux:", workflow)
+        self.assertIn("bash -n install.sh", workflow)
+        self.assertIn("bash -n linux/cliproxyapi-manager.sh", workflow)
+        self.assertIn("shellcheck install.sh linux/cliproxyapi-manager.sh", workflow)
+        self.assertIn("bash tests/linux_integration.sh", workflow)
 
     def test_powershell_installer_parses(self) -> None:
         powershell = shutil.which("powershell.exe")

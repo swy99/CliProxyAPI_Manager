@@ -1,0 +1,2 @@
+*.sh text eol=lf
+/bin/*.js text eol=lf

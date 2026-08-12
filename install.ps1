@@ -10,7 +10,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$InstallerVersion = "1.3.1"
+$InstallerVersion = "1.4.0"
 $MaximumAssetBytes = 256MB
 $MaximumScriptBytes = 5MB
 $BackendReleaseApi = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"

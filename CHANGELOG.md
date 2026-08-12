@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.0 - 2026-08-12
+
+- Adds native Linux amd64/aarch64 installation under `$HOME/CLIProxyAPI` with verified upstream release assets.
+- Adds a Linux manager command for service lifecycle, logs, provider login, and updates, using a systemd user service when available and a PID supervisor otherwise.
+- Makes the npm launcher dispatch to PowerShell on Windows and Bash on Linux.
+
 ## 1.3.1 - 2026-08-12
 
 - Changes the default install directory from `%LOCALAPPDATA%\CLIProxyAPI` to `%USERPROFILE%\CLIProxyAPI`.
